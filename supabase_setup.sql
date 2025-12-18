@@ -53,7 +53,7 @@ drop policy if exists "members_select_self" on public.trip_members;
 create policy "trips_insert_authenticated"
 on public.trips
 for insert
-with check (auth.role() = 'authenticated');
+with check (auth.uid() is not null);
 
 -- Trips: only members can read.
 create policy "trips_select_members"
@@ -94,7 +94,7 @@ create policy "members_insert_with_code"
 on public.trip_members
 for insert
 with check (
-  auth.role() = 'authenticated'
+  auth.uid() is not null
   and auth.uid() = user_id
   and exists (
     select 1
@@ -118,4 +118,3 @@ exception
   when duplicate_object then null;
   when undefined_object then null;
 end $$;
-

@@ -1028,6 +1028,19 @@ async function main() {
     return syncState.client;
   };
 
+  const syncErrorMessage = (err) => {
+    const msg = String(err?.message || err || "");
+    const lower = msg.toLowerCase();
+    const code = typeof err?.code === "string" ? err.code : "";
+    if (lower.includes("signinanonymously") || lower.includes("anonymous sign")) {
+      return "Enable Anonymous sign-ins in Supabase";
+    }
+    if (code === "42501" || lower.includes("row-level security") || lower.includes("row level security")) {
+      return "Supabase policy blocked sync — re-run supabase_setup.sql";
+    }
+    return null;
+  };
+
   const ensureAuthed = async (client) => {
     const session = await client.auth.getSession();
     if (session?.data?.session) return session.data.session;
@@ -1267,12 +1280,7 @@ async function main() {
       setSyncUi("on");
       return true;
     } catch (err) {
-      const msg =
-        String(err?.message || err || "").includes("Anonymous") ||
-        String(err?.message || err || "").includes("signInAnonymously")
-          ? "Enable Anonymous sign-ins in Supabase"
-          : "Sync failed";
-      showToast(msg);
+      showToast(syncErrorMessage(err) || "Sync failed");
       setSyncUi("off");
       return false;
     } finally {
@@ -1328,8 +1336,8 @@ async function main() {
       setSyncUi("on");
       showToast("Share link created");
       return { tripId, joinCode };
-    } catch {
-      showToast("Could not create trip");
+    } catch (err) {
+      showToast(syncErrorMessage(err) || "Could not create trip");
       setSyncUi("off");
       return null;
     } finally {

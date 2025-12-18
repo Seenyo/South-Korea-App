@@ -32,6 +32,8 @@ GitHub Pages is static, so cross-device sync needs a backend. This app can sync:
 1) Supabase Dashboard → **Authentication** → enable **Anonymous sign-ins**
 2) Supabase Dashboard → **SQL Editor** → run `supabase_setup.sql`
 
+If you see `Supabase policy blocked sync`, re-run `supabase_setup.sql` (policies updated).
+
 ### 2) Use it
 
 - Open the app → Planner → **Sync**
