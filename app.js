@@ -561,7 +561,6 @@ async function main() {
       snap: "collapsed",
       fullHeight: 0,
       y: 0,
-      yHalf: 0,
       yCollapsed: 0,
     };
 
@@ -577,12 +576,10 @@ async function main() {
       const handleH = sheetHandle?.getBoundingClientRect().height || 0;
       const collapsedH = Math.round(handleH + headerH);
 
-      const fullH = Math.round(clamp(viewportH * 0.86, collapsedH + 160, viewportH - 8));
-      const halfH = Math.round(clamp(viewportH * 0.56, collapsedH + 120, fullH - 80));
+      const fullH = Math.round(clamp(viewportH, collapsedH + 140, viewportH));
 
       state.fullHeight = fullH;
-      state.yCollapsed = Math.round(fullH - collapsedH);
-      state.yHalf = Math.round(fullH - halfH);
+      state.yCollapsed = Math.max(0, Math.round(fullH - collapsedH));
 
       sheetEl.style.height = `${fullH}px`;
     };
@@ -592,7 +589,6 @@ async function main() {
       state.snap = snap;
       if (immediate) sheetEl.classList.add("is-dragging");
       if (snap === "full") setY(0);
-      else if (snap === "half") setY(state.yHalf);
       else setY(state.yCollapsed);
       sheetEl.dataset.sheetSnap = snap;
       if (immediate) requestAnimationFrame(() => sheetEl.classList.remove("is-dragging"));
@@ -601,7 +597,6 @@ async function main() {
     const nearestSnap = (y) => {
       const candidates = [
         { snap: "full", y: 0 },
-        { snap: "half", y: state.yHalf },
         { snap: "collapsed", y: state.yCollapsed },
       ];
       candidates.sort((a, b) => Math.abs(y - a.y) - Math.abs(y - b.y));
@@ -653,11 +648,7 @@ async function main() {
 
       const fast = Math.abs(v) > 0.6;
       if (fast) {
-        if (v < 0) {
-          snapTo(state.y <= state.yHalf ? "full" : "half");
-        } else {
-          snapTo(state.y >= state.yHalf ? "collapsed" : "half");
-        }
+        snapTo(v < 0 ? "full" : "collapsed");
         return;
       }
 
@@ -666,7 +657,7 @@ async function main() {
 
     const toggle = () => {
       if (!state.enabled) return;
-      if (state.snap === "collapsed") snapTo("half");
+      if (state.snap === "collapsed") snapTo("full");
       else snapTo("collapsed");
     };
 
@@ -767,7 +758,8 @@ async function main() {
     const options = { animate };
     if (sheet?.isEnabled?.()) {
       const size = map.getSize();
-      const safeBottom = sheet.getSafeBottomPxRelativeToMap();
+      let safeBottom = sheet.getSafeBottomPxRelativeToMap();
+      if (safeBottom < 140) safeBottom = size.y;
       const covered = Math.max(0, size.y - safeBottom);
       options.paddingTopLeft = [base, base];
       options.paddingBottomRight = [base, base + covered];
@@ -1016,7 +1008,10 @@ async function main() {
   const getFollowSafeViewport = () => {
     const size = map.getSize();
     let bottom = size.y;
-    if (sheet?.isEnabled?.()) bottom = Math.min(bottom, sheet.getSafeBottomPxRelativeToMap());
+    if (sheet?.isEnabled?.()) {
+      const safeBottom = sheet.getSafeBottomPxRelativeToMap();
+      bottom = safeBottom < 140 ? bottom : Math.min(bottom, safeBottom);
+    }
     return { left: 0, top: 0, right: size.x, bottom: Math.max(0, bottom) };
   };
 
