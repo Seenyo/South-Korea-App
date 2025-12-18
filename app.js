@@ -1,6 +1,7 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 
 const STATUS_KEY = "sc_trip_status_v1";
+const LOC_SETTINGS_KEY = "sc_trip_loc_settings_v1";
 
 function loadStatus() {
   try {
@@ -16,6 +17,27 @@ function loadStatus() {
 function saveStatus(status) {
   try {
     localStorage.setItem(STATUS_KEY, JSON.stringify(status));
+  } catch {
+    // ignore
+  }
+}
+
+function loadLocSettings() {
+  try {
+    const raw = localStorage.getItem(LOC_SETTINGS_KEY);
+    if (!raw) return { tracking: true, follow: true };
+    const parsed = JSON.parse(raw);
+    const tracking = typeof parsed?.tracking === "boolean" ? parsed.tracking : true;
+    const follow = typeof parsed?.follow === "boolean" ? parsed.follow : true;
+    return { tracking, follow };
+  } catch {
+    return { tracking: true, follow: true };
+  }
+}
+
+function saveLocSettings(settings) {
+  try {
+    localStorage.setItem(LOC_SETTINGS_KEY, JSON.stringify(settings));
   } catch {
     // ignore
   }
@@ -386,6 +408,7 @@ function guessKind(place) {
 async function main() {
   const btnFit = $("#btnFit");
   const btnLocate = $("#btnLocate");
+  const btnFollow = $("#btnFollow");
   const searchInput = $("#search");
   const btnClearSearch = $("#btnClearSearch");
 
@@ -414,12 +437,13 @@ async function main() {
 
   const allPlaces = data.places || [];
   let statusById = loadStatus();
+  let locSettings = loadLocSettings();
 
   const map = L.map("map", {
     zoomControl: false,
     preferCanvas: true,
   });
-  L.control.zoom({ position: "bottomright" }).addTo(map);
+  L.control.zoom({ position: "topright" }).addTo(map);
 
   const tiles = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
     maxZoom: 20,
@@ -427,9 +451,190 @@ async function main() {
       '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
   });
   tiles.addTo(map);
+  map.attributionControl.setPosition("topleft");
 
   const clusters = createClusterGroup();
   clusters.addTo(map);
+
+  const sheetEl = $("#sheet");
+  const sheetHandle = $("#sheetHandle");
+  const sheetHeader = $("#sheetHeader");
+
+  const sheet = (() => {
+    if (!sheetEl) return null;
+
+    const mq = window.matchMedia("(max-width: 767px)");
+    const state = {
+      enabled: false,
+      snap: "collapsed",
+      fullHeight: 0,
+      y: 0,
+      yHalf: 0,
+      yCollapsed: 0,
+    };
+
+    const setY = (y) => {
+      state.y = clamp(y, 0, state.yCollapsed);
+      sheetEl.style.setProperty("--sheet-y", `${state.y}px`);
+    };
+
+    const compute = () => {
+      if (!state.enabled) return;
+      const viewportH = window.innerHeight || 800;
+      const headerH = sheetHeader?.getBoundingClientRect().height || 220;
+      const handleH = sheetHandle?.getBoundingClientRect().height || 0;
+      const collapsedH = Math.round(handleH + headerH);
+
+      const fullH = Math.round(clamp(viewportH * 0.86, collapsedH + 160, viewportH - 8));
+      const halfH = Math.round(clamp(viewportH * 0.56, collapsedH + 120, fullH - 80));
+
+      state.fullHeight = fullH;
+      state.yCollapsed = Math.round(fullH - collapsedH);
+      state.yHalf = Math.round(fullH - halfH);
+
+      sheetEl.style.height = `${fullH}px`;
+    };
+
+    const snapTo = (snap, { immediate = false } = {}) => {
+      if (!state.enabled) return;
+      state.snap = snap;
+      if (immediate) sheetEl.classList.add("is-dragging");
+      if (snap === "full") setY(0);
+      else if (snap === "half") setY(state.yHalf);
+      else setY(state.yCollapsed);
+      sheetEl.dataset.sheetSnap = snap;
+      if (immediate) requestAnimationFrame(() => sheetEl.classList.remove("is-dragging"));
+    };
+
+    const nearestSnap = (y) => {
+      const candidates = [
+        { snap: "full", y: 0 },
+        { snap: "half", y: state.yHalf },
+        { snap: "collapsed", y: state.yCollapsed },
+      ];
+      candidates.sort((a, b) => Math.abs(y - a.y) - Math.abs(y - b.y));
+      return candidates[0]?.snap || "collapsed";
+    };
+
+    let drag = null;
+    const onPointerDown = (e) => {
+      if (!state.enabled) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      drag = {
+        startY: e.clientY,
+        startSheetY: state.y,
+        lastY: e.clientY,
+        lastT: performance.now(),
+        velocity: 0,
+        moved: false,
+      };
+      sheetEl.classList.add("is-dragging");
+      sheetHandle?.setPointerCapture?.(e.pointerId);
+    };
+
+    const onPointerMove = (e) => {
+      if (!drag) return;
+      const now = performance.now();
+      const dy = e.clientY - drag.startY;
+      if (Math.abs(dy) > 6) drag.moved = true;
+      const next = drag.startSheetY + dy;
+      setY(next);
+
+      const dt = Math.max(1, now - drag.lastT);
+      drag.velocity = (e.clientY - drag.lastY) / dt; // px/ms
+      drag.lastY = e.clientY;
+      drag.lastT = now;
+    };
+
+    const onPointerUp = () => {
+      if (!drag) return;
+      sheetEl.classList.remove("is-dragging");
+
+      const v = drag.velocity;
+      const moved = drag.moved;
+      drag = null;
+
+      if (!moved) {
+        toggle();
+        return;
+      }
+
+      const fast = Math.abs(v) > 0.6;
+      if (fast) {
+        if (v < 0) {
+          snapTo(state.y <= state.yHalf ? "full" : "half");
+        } else {
+          snapTo(state.y >= state.yHalf ? "collapsed" : "half");
+        }
+        return;
+      }
+
+      snapTo(nearestSnap(state.y));
+    };
+
+    const toggle = () => {
+      if (!state.enabled) return;
+      if (state.snap === "collapsed") snapTo("half");
+      else snapTo("collapsed");
+    };
+
+    const enable = () => {
+      if (state.enabled) return;
+      state.enabled = true;
+      compute();
+      snapTo("collapsed", { immediate: true });
+    };
+
+    const disable = () => {
+      if (!state.enabled) return;
+      state.enabled = false;
+      sheetEl.classList.remove("is-dragging");
+      sheetEl.style.removeProperty("--sheet-y");
+      sheetEl.style.removeProperty("height");
+      delete sheetEl.dataset.sheetSnap;
+    };
+
+    const sync = () => {
+      if (mq.matches) enable();
+      else disable();
+    };
+
+    sheetHandle?.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointermove", onPointerMove, { passive: true });
+    window.addEventListener("pointerup", onPointerUp, { passive: true });
+    window.addEventListener("pointercancel", onPointerUp, { passive: true });
+
+    window.addEventListener("resize", () => {
+      if (!state.enabled) return;
+      compute();
+      snapTo(state.snap, { immediate: true });
+    });
+    mq.addEventListener("change", sync);
+    sync();
+
+    return {
+      isEnabled: () => state.enabled,
+      refresh: () => {
+        if (!state.enabled) return;
+        compute();
+        snapTo(state.snap, { immediate: true });
+      },
+      getSafeBottomPxRelativeToMap: () => {
+        const mapRect = map.getContainer().getBoundingClientRect();
+        const sheetRect = sheetEl.getBoundingClientRect();
+        return Math.max(0, sheetRect.top - mapRect.top);
+      },
+      onSnap: (fn) => {
+        const handler = (e) => {
+          if (e.target !== sheetEl) return;
+          if (e.propertyName !== "transform") return;
+          fn(state.snap);
+        };
+        sheetEl.addEventListener("transitionend", handler);
+        return () => sheetEl.removeEventListener("transitionend", handler);
+      },
+    };
+  })();
 
   const markersById = new Map();
   for (const place of allPlaces) {
@@ -466,7 +671,18 @@ async function main() {
       map.setView(bounds.getCenter(), 15, { animate });
       return;
     }
-    map.fitBounds(bounds.pad(0.18), { animate });
+    const base = 24;
+    const options = { animate };
+    if (sheet?.isEnabled?.()) {
+      const size = map.getSize();
+      const safeBottom = sheet.getSafeBottomPxRelativeToMap();
+      const covered = Math.max(0, size.y - safeBottom);
+      options.paddingTopLeft = [base, base];
+      options.paddingBottomRight = [base, base + covered];
+    } else {
+      options.padding = [base, base];
+    }
+    map.fitBounds(bounds.pad(0.18), options);
   };
 
   const syncMarkers = () => {
@@ -511,6 +727,7 @@ async function main() {
     });
     renderList({ places: state.filtered, selectedId: state.selectedId, statusById });
     syncMarkers();
+    sheet?.refresh?.();
     if (!keepView) fitToPins(false);
   };
 
@@ -593,12 +810,21 @@ async function main() {
     marker: null,
     accuracyCircle: null,
     didInitialCenter: false,
+    lastLatLng: null,
+    lastAccuracyM: null,
   };
 
   const setLocateUi = (active) => {
     btnLocate.dataset.active = active ? "true" : "false";
     btnLocate.textContent = active ? "Tracking" : "Locate";
-    btnLocate.title = active ? "Stop tracking your location" : "Show your current location";
+    btnLocate.title = active ? "Stop tracking your location" : "Start tracking your location";
+  };
+
+  const setFollowUi = (active) => {
+    if (!btnFollow) return;
+    btnFollow.dataset.active = active ? "true" : "false";
+    btnFollow.textContent = active ? "Follow" : "Browse";
+    btnFollow.title = active ? "Keep map following your location" : "Stop following your location";
   };
 
   const myLocationIcon = L.divIcon({
@@ -634,6 +860,7 @@ async function main() {
     const lat = pos.coords.latitude;
     const lon = pos.coords.longitude;
     const accuracyM = pos.coords.accuracy;
+    const isFirstFix = !myLocation.didInitialCenter;
 
     ensureMyLocationLayers([lat, lon], accuracyM);
 
@@ -642,6 +869,8 @@ async function main() {
     if (typeof accuracyM === "number" && Number.isFinite(accuracyM)) {
       myLocation.accuracyCircle.setRadius(Math.max(accuracyM, 10));
     }
+    myLocation.lastLatLng = L.latLng(lat, lon);
+    myLocation.lastAccuracyM = typeof accuracyM === "number" ? accuracyM : null;
 
     const accText =
       typeof accuracyM === "number" && Number.isFinite(accuracyM)
@@ -657,14 +886,20 @@ async function main() {
     if (popup) popup.setContent(popupHtml);
     else myLocation.marker.bindPopup(popupHtml);
 
-    if (!myLocation.didInitialCenter) {
+    if (isFirstFix) {
       myLocation.didInitialCenter = true;
-      map.flyTo([lat, lon], Math.max(map.getZoom(), 15), { duration: 0.7 });
-      myLocation.marker.openPopup();
+      if (locSettings.follow) {
+        map.flyTo([lat, lon], Math.max(map.getZoom(), 15), { duration: 0.7 });
+        map.once("moveend", () => keepMyLocationInView(true));
+        myLocation.marker.openPopup();
+      }
+      return;
     }
+
+    if (locSettings.follow) keepMyLocationInView(false);
   };
 
-  const stopTracking = () => {
+  const stopTracking = ({ persist = true } = {}) => {
     if (myLocation.watchId != null) {
       navigator.geolocation.clearWatch(myLocation.watchId);
       myLocation.watchId = null;
@@ -679,9 +914,44 @@ async function main() {
       myLocation.accuracyCircle = null;
     }
     setLocateUi(false);
+
+    if (persist) {
+      locSettings = { ...locSettings, tracking: false };
+      saveLocSettings(locSettings);
+    }
   };
 
-  const startTracking = () => {
+  const getFollowSafeViewport = () => {
+    const size = map.getSize();
+    let bottom = size.y;
+    if (sheet?.isEnabled?.()) bottom = Math.min(bottom, sheet.getSafeBottomPxRelativeToMap());
+    return { left: 0, top: 0, right: size.x, bottom: Math.max(0, bottom) };
+  };
+
+  const keepMyLocationInView = (force) => {
+    if (!locSettings.follow) return;
+    if (!myLocation.lastLatLng) return;
+
+    const safe = getFollowSafeViewport();
+    const p = map.latLngToContainerPoint(myLocation.lastLatLng);
+
+    const safeBottom = Math.max(safe.top + 10, safe.bottom);
+    const desiredX = (safe.left + safe.right) / 2;
+
+    const desiredYBase = safe.top + (safeBottom - safe.top) * 0.44;
+    const minY = Math.min(safe.top + 120, safeBottom - 20);
+    const maxY = Math.max(minY, safeBottom - 150);
+    const desiredY = clamp(desiredYBase, minY, maxY);
+
+    const dx = p.x - desiredX;
+    const dy = p.y - desiredY;
+    const thresholdPx = force ? 0 : 10;
+    if (Math.hypot(dx, dy) < thresholdPx) return;
+
+    map.panBy([dx, dy], { animate: true, duration: 0.45 });
+  };
+
+  const startTracking = ({ auto = false } = {}) => {
     if (!navigator.geolocation) {
       showToast("Geolocation not supported");
       return;
@@ -689,14 +959,18 @@ async function main() {
     if (myLocation.watchId != null) return;
 
     setLocateUi(true);
-    showToast("Locating…");
+    if (auto) showToast("Locating…");
+    locSettings = { ...locSettings, tracking: true };
+    saveLocSettings(locSettings);
+
     myLocation.watchId = navigator.geolocation.watchPosition(
       (pos) => {
         updateMyLocation(pos);
-        showToast("Location updated", { durationMs: 900 });
+        showToast("Location updated", { durationMs: 800 });
       },
       (err) => {
-        stopTracking();
+        const denied = err?.code === 1;
+        stopTracking({ persist: denied });
         const msg =
           err?.code === 1
             ? "Location blocked"
@@ -717,7 +991,25 @@ async function main() {
       showToast("Location off");
       return;
     }
-    startTracking();
+    startTracking({ auto: false });
+  });
+
+  btnFollow?.addEventListener("click", () => {
+    locSettings = { ...locSettings, follow: !locSettings.follow };
+    saveLocSettings(locSettings);
+    setFollowUi(locSettings.follow);
+
+    if (locSettings.follow) {
+      if (myLocation.lastLatLng) {
+        map.flyTo(myLocation.lastLatLng, Math.max(map.getZoom(), 15), { duration: 0.55 });
+        map.once("moveend", () => keepMyLocationInView(true));
+      } else if (locSettings.tracking && myLocation.watchId == null) {
+        startTracking({ auto: false });
+      }
+      showToast("Follow on");
+    } else {
+      showToast("Follow off");
+    }
   });
 
   sync();
@@ -725,6 +1017,18 @@ async function main() {
   const invalidate = () => map.invalidateSize({ animate: false });
   window.setTimeout(invalidate, 50);
   window.addEventListener("resize", invalidate);
+
+  setFollowUi(locSettings.follow);
+  setLocateUi(myLocation.watchId != null);
+
+  if (locSettings.tracking) {
+    startTracking({ auto: true });
+  } else {
+    setLocateUi(false);
+  }
+
+  sheet?.onSnap?.(() => keepMyLocationInView(true));
+
   showToast("Loaded");
 }
 

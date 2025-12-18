@@ -165,6 +165,41 @@
       #btnLocate[data-active="true"]:hover {
         background: rgba(34, 211, 238, 0.18) !important;
       }
+
+      #btnFollow[data-active="true"] {
+        background: rgba(236, 72, 153, 0.16) !important;
+        box-shadow:
+          inset 0 0 0 1px rgba(236, 72, 153, 0.32),
+          0 14px 30px rgba(0, 0, 0, 0.22);
+      }
+      #btnFollow[data-active="true"]:hover {
+        background: rgba(236, 72, 153, 0.2) !important;
+      }
+
+      .trip-sheet {
+        height: min(86dvh, 720px);
+        transform: translate3d(0, var(--sheet-y, 0px), 0);
+        transition: transform 280ms cubic-bezier(0.2, 0.85, 0.2, 1);
+        will-change: transform;
+      }
+      .trip-sheet.is-dragging {
+        transition: none;
+      }
+      .sheet-scroll {
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
+        padding-bottom: calc(env(safe-area-inset-bottom) + 14px);
+      }
+      @media (min-width: 768px) {
+        .trip-sheet {
+          height: 100% !important;
+          transform: none !important;
+          transition: none !important;
+        }
+        .sheet-scroll {
+          padding-bottom: 0;
+        }
+      }
     </style>
 
     <style type="text/tailwindcss">
@@ -193,18 +228,36 @@
     <div class="h-dvh w-full overflow-hidden">
       <div class="flex h-full w-full flex-col md:flex-row">
         <aside
-          class="h-[46dvh] w-full shrink-0 overflow-hidden md:h-full md:w-[420px] md:border-r md:border-white/10"
+          id="sheet"
+          class="trip-sheet fixed inset-x-0 bottom-0 z-[1200] w-full overflow-hidden md:static md:z-auto md:h-full md:w-[420px] md:shrink-0 md:border-r md:border-white/10"
         >
-          <div class="flex h-full flex-col bg-slate-950/60 backdrop-blur-xl">
-            <div class="border-b border-white/10 px-4 py-4">
+          <div
+            class="flex h-full flex-col rounded-t-3xl border border-white/10 bg-slate-950/70 backdrop-blur-xl md:rounded-none md:border-0 md:bg-slate-950/60"
+          >
+            <div
+              id="sheetHandle"
+              class="md:hidden touch-none cursor-grab select-none px-4 pt-3 pb-2 active:cursor-grabbing"
+            >
+              <div class="mx-auto h-1.5 w-12 rounded-full bg-white/15 ring-1 ring-white/10"></div>
+            </div>
+
+            <div id="sheetHeader" class="border-b border-white/10 px-4 py-3 md:py-4">
               <div class="flex items-center justify-between gap-3">
-                <div>
-                  <div class="text-lg font-extrabold tracking-tight md:text-xl">Trip Map</div>
-                  <div class="text-xs text-slate-300">
+                <div class="min-w-0">
+                  <div class="text-base font-extrabold tracking-tight md:text-xl">Trip Map</div>
+                  <div class="hidden text-xs text-slate-300 md:block">
                     `list.md` / `hotel.txt` → pins (Seoul)
                   </div>
                 </div>
                 <div class="flex items-center gap-2">
+                  <button
+                    id="btnFollow"
+                    class="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15 active:scale-[0.99]"
+                    type="button"
+                    title="Follow my location"
+                  >
+                    Follow
+                  </button>
                   <button
                     id="btnFit"
                     class="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15 active:scale-[0.99]"
@@ -244,15 +297,18 @@
                 </button>
               </div>
 
-              <div class="mt-3 flex flex-wrap gap-2" id="categoryChips"></div>
+              <div
+                class="mt-3 flex gap-2 overflow-x-auto pr-1 [-webkit-overflow-scrolling:touch] md:flex-wrap md:overflow-visible"
+                id="categoryChips"
+              ></div>
               <div class="mt-3 text-xs text-slate-300" id="stats"></div>
             </div>
 
-            <div class="min-h-0 flex-1 overflow-auto">
+            <div class="sheet-scroll min-h-0 flex-1 overflow-auto">
               <div class="p-2" id="placeList"></div>
             </div>
 
-            <div class="border-t border-white/10 px-4 py-3 text-[11px] text-slate-400">
+            <div class="hidden border-t border-white/10 px-4 py-3 text-[11px] text-slate-400 md:block">
               データ更新: <span class="font-mono">node scripts/generate-places.mjs</span>
             </div>
           </div>
