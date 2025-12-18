@@ -2,6 +2,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 
 const STATUS_KEY = "sc_trip_status_v1";
 const LOC_SETTINGS_KEY = "sc_trip_loc_settings_v1";
+const THEME_KEY = "sc_trip_map_theme_v1";
 
 function loadStatus() {
   try {
@@ -38,6 +39,23 @@ function loadLocSettings() {
 function saveLocSettings(settings) {
   try {
     localStorage.setItem(LOC_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // ignore
+  }
+}
+
+function loadThemeId() {
+  try {
+    const raw = localStorage.getItem(THEME_KEY);
+    return raw ? String(raw) : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+function saveThemeId(themeId) {
+  try {
+    localStorage.setItem(THEME_KEY, String(themeId));
   } catch {
     // ignore
   }
@@ -227,13 +245,13 @@ function renderChips({ categories, activeCategory }) {
     el.type = "button";
     el.dataset.category = id;
     el.className = [
-      "inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ring-1 transition",
+      "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold ring-1 transition",
       active
         ? "bg-fuchsia-500/20 text-white ring-fuchsia-400/40"
         : "bg-white/5 text-slate-200 ring-white/10 hover:bg-white/10",
     ].join(" ");
 
-    el.innerHTML = `<span>${escapeHtml(label)}</span><span class="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-slate-200 ring-1 ring-white/10">${count}</span>`;
+    el.innerHTML = `<span>${escapeHtml(label)}</span><span class="rounded-full bg-white/10 px-1.5 py-0.5 text-[9px] text-slate-200 ring-1 ring-white/10">${count}</span>`;
     return el;
   };
 
@@ -353,7 +371,7 @@ function renderList({ places, selectedId, statusById }) {
             <span class="h-2.5 w-2.5 shrink-0 rounded-full" style="background: linear-gradient(135deg, ${palette.gradient[0]}, ${palette.gradient[1]});"></span>
             <div class="truncate text-sm font-extrabold tracking-tight">${name}</div>
           </div>
-          <div class="mt-1 truncate text-xs text-slate-300">${cat}</div>
+          <div class="mt-1 truncate text-[11px] text-slate-300">${cat}</div>
           ${address ? `<div class="mt-2 line-clamp-2 text-xs text-slate-200">${address}</div>` : ""}
         </div>
         <div class="flex shrink-0 flex-col items-end gap-1">
@@ -409,6 +427,7 @@ async function main() {
   const btnFit = $("#btnFit");
   const btnLocate = $("#btnLocate");
   const btnFollow = $("#btnFollow");
+  const btnTheme = $("#btnTheme");
   const searchInput = $("#search");
   const btnClearSearch = $("#btnClearSearch");
 
@@ -445,13 +464,86 @@ async function main() {
   });
   L.control.zoom({ position: "topright" }).addTo(map);
 
-  const tiles = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-    maxZoom: 20,
-    attribution:
-      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-  });
-  tiles.addTo(map);
   map.attributionControl.setPosition("topleft");
+
+  const THEMES = [
+    {
+      id: "dark",
+      label: "Dark",
+      url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+      options: {
+        maxZoom: 20,
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      },
+    },
+    {
+      id: "light",
+      label: "Light",
+      url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+      options: {
+        maxZoom: 20,
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      },
+    },
+    {
+      id: "voyager",
+      label: "Voyager",
+      url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+      options: {
+        maxZoom: 20,
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      },
+    },
+    {
+      id: "osm",
+      label: "OSM",
+      url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      options: {
+        maxZoom: 19,
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      },
+    },
+  ];
+
+  let baseLayer = null;
+  let themeId = loadThemeId();
+
+  const setThemeUi = (id) => {
+    if (!btnTheme) return;
+    const theme = THEMES.find((t) => t.id === id) || THEMES[0];
+    btnTheme.textContent = theme.label;
+    btnTheme.title = `Map theme: ${theme.label}`;
+    btnTheme.dataset.theme = theme.id;
+  };
+
+  const setMapTheme = (id, { persist = true } = {}) => {
+    const theme = THEMES.find((t) => t.id === id) || THEMES[0];
+    themeId = theme.id;
+    if (persist) saveThemeId(themeId);
+    setThemeUi(themeId);
+
+    if (baseLayer) {
+      map.removeLayer(baseLayer);
+      baseLayer = null;
+    }
+
+    baseLayer = L.tileLayer(theme.url, theme.options);
+    baseLayer.addTo(map);
+  };
+
+  const cycleTheme = () => {
+    const idx = THEMES.findIndex((t) => t.id === themeId);
+    const next = THEMES[(idx + 1) % THEMES.length];
+    setMapTheme(next.id);
+    showToast(`Theme: ${next.label}`);
+  };
+
+  setMapTheme(themeId, { persist: false });
+  btnTheme?.addEventListener("click", cycleTheme);
 
   const clusters = createClusterGroup();
   clusters.addTo(map);
