@@ -6,6 +6,7 @@ const THEME_KEY = "sc_trip_map_theme_v1";
 const PLANNER_KEY = "sc_trip_planner_v1";
 const VIEW_KEY = "sc_trip_view_v1";
 const INSTALL_TIP_KEY = "sc_trip_install_tip_v1";
+const CAT_EXPANDED_KEY = "sc_trip_cat_expanded_v1";
 
 function uid(prefix) {
   const p = prefix ? `${prefix}_` : "";
@@ -185,6 +186,22 @@ function loadViewId() {
 function saveViewId(viewId) {
   try {
     localStorage.setItem(VIEW_KEY, viewId);
+  } catch {
+    // ignore
+  }
+}
+
+function loadCategoryExpanded() {
+  try {
+    return localStorage.getItem(CAT_EXPANDED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveCategoryExpanded(expanded) {
+  try {
+    localStorage.setItem(CAT_EXPANDED_KEY, expanded ? "1" : "0");
   } catch {
     // ignore
   }
@@ -514,17 +531,16 @@ function buildPopupHtml(place) {
           .join("")}</div>`
       : "";
   const naverUrl = buildNaverEntryUrl(place);
-  const googleUrl = buildGoogleMapsSearchUrl(place);
   const sourceUrl = place.url || naverUrl;
 
   const buttons = [
+    `<button class="inline-flex items-center justify-center rounded-xl bg-fuchsia-500/20 px-3 py-2 text-xs font-extrabold text-white ring-1 ring-fuchsia-400/35 hover:bg-fuchsia-500/25" type="button" data-action="popupAdd" data-place-id="${escapeHtml(place.id)}">Add</button>`,
     naverUrl
       ? `<a class="inline-flex items-center justify-center rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 hover:bg-white/15" target="_blank" rel="noreferrer" href="${naverUrl}">Naver</a>`
       : "",
     sourceUrl && /^https?:\/\//.test(sourceUrl)
       ? `<a class="inline-flex items-center justify-center rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 hover:bg-white/15" target="_blank" rel="noreferrer" href="${sourceUrl}">Link</a>`
       : "",
-    `<a class="inline-flex items-center justify-center rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 hover:bg-white/15" target="_blank" rel="noreferrer" href="${googleUrl}">Google Maps</a>`,
   ]
     .filter(Boolean)
     .join("");
@@ -549,13 +565,13 @@ function renderChips({ categories, activeCategory }) {
     el.type = "button";
     el.dataset.category = id;
     el.className = [
-      "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold ring-1 transition",
+      "flex w-full items-center justify-between gap-2 rounded-full px-2.5 py-1 text-[10px] font-semibold ring-1 transition",
       active
         ? "bg-fuchsia-500/20 text-white ring-fuchsia-400/40"
         : "bg-white/5 text-slate-200 ring-white/10 hover:bg-white/10",
     ].join(" ");
 
-    el.innerHTML = `<span>${escapeHtml(label)}</span><span class="rounded-full bg-white/10 px-1.5 py-0.5 text-[9px] text-slate-200 ring-1 ring-white/10">${count}</span>`;
+    el.innerHTML = `<span class="min-w-0 truncate">${escapeHtml(label)}</span><span class="shrink-0 rounded-full bg-white/10 px-1.5 py-0.5 text-[9px] text-slate-200 ring-1 ring-white/10">${count}</span>`;
     return el;
   };
 
@@ -596,7 +612,7 @@ function renderStats({ total, pinned, favorites, visited, generatedAt }) {
   }`;
 }
 
-function renderList({ places, selectedId, statusById, inDayPlaceIds }) {
+function renderList({ places, selectedId, statusById, inPlannerPlaceIds }) {
   const root = $("#placeList");
   root.innerHTML = "";
 
@@ -616,7 +632,7 @@ function renderList({ places, selectedId, statusById, inDayPlaceIds }) {
     const isSelected = place.id === selectedId;
     const isFavorite = !!statusById?.[place.id]?.favorite;
     const isVisited = !!statusById?.[place.id]?.visited;
-    const isInDay = !!inDayPlaceIds?.has?.(place.id);
+    const isInPlanner = !!inPlannerPlaceIds?.has?.(place.id);
 
     const el = document.createElement("div");
     el.dataset.placeId = place.id;
@@ -674,11 +690,11 @@ function renderList({ places, selectedId, statusById, inDayPlaceIds }) {
         data-action="addToDay"
         data-place-id="${escapeHtml(place.id)}"
         class="inline-flex items-center justify-center rounded-full px-2 py-1 text-[10px] font-extrabold ring-1 transition ${
-          isInDay
+          isInPlanner
             ? "bg-cyan-400/20 text-cyan-200 ring-cyan-300/30"
             : "bg-white/5 text-slate-200 ring-white/10 hover:bg-white/10"
         }"
-        title="${isInDay ? "Already in this day" : "Add to planner day"}"
+        title="${isInPlanner ? "Already in planner (tap to add)" : "Add to planner"}"
       >＋</button>
     `;
 
@@ -755,7 +771,12 @@ async function main() {
   const plannerHeader = $("#plannerHeader");
   const panelPlaces = $("#panelPlaces");
   const panelPlanner = $("#panelPlanner");
+  const btnToggleCategories = $("#btnToggleCategories");
+  const categoryWrap = $("#categoryWrap");
+  const categorySummary = $("#categorySummary");
+  const categoryCaret = $("#categoryCaret");
   const btnDayAdd = $("#btnDayAdd");
+  const btnDayDelete = $("#btnDayDelete");
   const plannerDaysEl = $("#plannerDays");
   const plannerItemsEl = $("#plannerItems");
   const btnPlanRoute = $("#btnPlanRoute");
@@ -807,6 +828,7 @@ async function main() {
     {
       id: "dark",
       label: "Dark",
+      shortLabel: "Dark",
       url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
       options: {
         maxZoom: 20,
@@ -817,6 +839,7 @@ async function main() {
     {
       id: "light",
       label: "Light",
+      shortLabel: "Light",
       url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
       options: {
         maxZoom: 20,
@@ -827,6 +850,7 @@ async function main() {
     {
       id: "voyager",
       label: "Voyager",
+      shortLabel: "Voy",
       url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
       options: {
         maxZoom: 20,
@@ -837,6 +861,7 @@ async function main() {
     {
       id: "osm",
       label: "OSM",
+      shortLabel: "OSM",
       url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
       options: {
         maxZoom: 19,
@@ -852,7 +877,7 @@ async function main() {
   const setThemeUi = (id) => {
     if (!btnTheme) return;
     const theme = THEMES.find((t) => t.id === id) || THEMES[0];
-    btnTheme.textContent = theme.label;
+    btnTheme.textContent = theme.shortLabel || theme.label;
     btnTheme.title = `Map theme: ${theme.label}`;
     btnTheme.dataset.theme = theme.id;
   };
@@ -1090,12 +1115,40 @@ async function main() {
     filtered: allPlaces,
   };
 
+  const mqDesktop = window.matchMedia("(min-width: 768px)");
+  let categoriesExpanded = loadCategoryExpanded();
+
+  const applyCategoryExpandedUi = () => {
+    const expanded = mqDesktop.matches ? true : categoriesExpanded;
+    categoryWrap?.classList.toggle("hidden", !expanded);
+    if (categoryCaret) categoryCaret.textContent = expanded ? "▴" : "▾";
+  };
+
+  const setCategorySummaryUi = () => {
+    if (!categorySummary) return;
+    const label = state.category === "__all__" ? "All" : formatCategoryLabel(state.category);
+    categorySummary.textContent = label;
+  };
+
+  btnToggleCategories?.addEventListener("click", () => {
+    categoriesExpanded = !categoriesExpanded;
+    saveCategoryExpanded(categoriesExpanded);
+    applyCategoryExpandedUi();
+    sheet?.refresh?.();
+  });
+  mqDesktop.addEventListener("change", () => {
+    applyCategoryExpandedUi();
+    sheet?.refresh?.();
+  });
+
   const getActiveDay = () =>
     planner.days.find((d) => d.id === planner.activeDayId) || planner.days[0] || null;
 
-  const getActiveDayPlaceIds = () => {
-    const day = getActiveDay();
-    const ids = day?.items?.map?.((it) => it.placeId) || [];
+  const getPlannerPlaceIds = () => {
+    const ids = [];
+    for (const day of planner.days) {
+      for (const it of day.items || []) ids.push(it.placeId);
+    }
     return new Set(ids);
   };
 
@@ -1131,27 +1184,233 @@ async function main() {
     return true;
   };
 
-  const addPlaceToActiveDay = (placeId) => {
-    const day = getActiveDay();
-    if (!day) {
+  const deleteDayId = (dayId) => {
+    if (!planner.days.some((d) => d.id === dayId)) return false;
+    expandedPlannerItemId = null;
+
+    const idx = planner.days.findIndex((d) => d.id === dayId);
+    const nextDays = planner.days.filter((d) => d.id !== dayId);
+
+    if (!nextDays.length) {
       commitPlanner(buildDefaultPlanner());
-      return { added: false, reason: "no-day" };
+      return true;
     }
-    if (day.items.some((it) => it.placeId === placeId)) return { added: false, reason: "exists" };
+
+    const nextActive = nextDays[Math.min(idx, nextDays.length - 1)];
+    commitPlanner({ ...planner, activeDayId: nextActive.id, days: nextDays });
+    return true;
+  };
+
+  const ensurePlannerHasDay = () => {
+    if (planner.days.length) return;
+    expandedPlannerItemId = null;
+    commitPlanner(buildDefaultPlanner());
+  };
+
+  const addPlaceToDayId = (placeId, dayId) => {
+    ensurePlannerHasDay();
+    const day = planner.days.find((d) => d.id === dayId) || planner.days[0] || null;
+    if (!day) return { added: false, reason: "no-day" };
+    if (day.items.some((it) => it.placeId === placeId))
+      return { added: false, reason: "exists", dayTitle: day.title };
 
     commitPlanner({
       ...planner,
+      activeDayId: day.id,
       days: planner.days.map((d) =>
         d.id === day.id
           ? {
               ...d,
-              items: [...d.items, { id: uid("item"), placeId, startTime: "", endTime: "", memo: "" }],
+              items: [
+                ...d.items,
+                { id: uid("item"), placeId, startTime: "", endTime: "", memo: "" },
+              ],
             }
           : d,
       ),
     });
-    return { added: true, dayTitle: day.title };
+    const nextDay = planner.days.find((d) => d.id === day.id) || day;
+    return { added: true, dayTitle: nextDay.title };
   };
+
+  const openDayPicker = ({ title, subtitle, placeId } = {}) =>
+    new Promise((resolve) => {
+      ensurePlannerHasDay();
+
+      const overlay = document.createElement("div");
+      overlay.className = "fixed inset-0 z-[2600] flex items-end md:items-center justify-center";
+
+      const place = placeId ? placeById.get(placeId) : null;
+      const placeName = place?.name ? escapeHtml(place.name) : null;
+      const alreadyIn = new Set();
+      if (placeId) {
+        for (const d of planner.days) {
+          if (d.items.some((it) => it.placeId === placeId)) alreadyIn.add(d.id);
+        }
+      }
+
+      const dayButtons = planner.days
+        .map((d) => {
+          const active = d.id === planner.activeDayId;
+          const hasIt = alreadyIn.has(d.id);
+          const count = d.items.length;
+          return `
+            <button
+              type="button"
+              data-day-id="${escapeHtml(d.id)}"
+              class="w-full rounded-2xl bg-white/5 px-4 py-3 text-left ring-1 ring-white/10 transition hover:bg-white/10"
+              title="${hasIt ? "Already contains this place" : "Add to this day"}"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="truncate text-sm font-extrabold text-white">${escapeHtml(d.title)}</div>
+                  <div class="mt-1 text-[11px] text-slate-300">${count} stops${
+                    active ? " · Active" : ""
+                  }${hasIt ? " · Added" : ""}</div>
+                </div>
+                <div class="flex shrink-0 items-center gap-2">
+                  ${
+                    hasIt
+                      ? `<span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-200 ring-1 ring-emerald-400/25">✓</span>`
+                      : ""
+                  }
+                  <span class="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-slate-200 ring-1 ring-white/10">${count}</span>
+                </div>
+              </div>
+            </button>
+          `;
+        })
+        .join("");
+
+      overlay.innerHTML = `
+        <div data-action="backdrop" class="absolute inset-0 bg-black/55 backdrop-blur-sm"></div>
+        <div class="relative w-full md:max-w-md md:rounded-3xl rounded-t-3xl border border-white/10 bg-slate-950/80 backdrop-blur-xl shadow-2xl">
+          <div class="border-b border-white/10 px-5 py-4">
+            <div class="text-base font-extrabold tracking-tight text-white">${escapeHtml(
+              title || "Add to day",
+            )}</div>
+            <div class="mt-1 text-xs text-slate-300">${
+              subtitle ? escapeHtml(subtitle) : placeName ? `Place: ${placeName}` : "Choose a day"
+            }</div>
+          </div>
+
+          <div class="max-h-[55dvh] overflow-auto px-5 py-4">
+            <div class="grid gap-2">
+              ${dayButtons}
+              <button
+                type="button"
+                data-action="newDay"
+                class="w-full rounded-2xl bg-fuchsia-500/15 px-4 py-3 text-left ring-1 ring-fuchsia-400/30 transition hover:bg-fuchsia-500/20"
+                title="Create a new day"
+              >
+                <div class="text-sm font-extrabold text-white">＋ New day</div>
+                <div class="mt-1 text-[11px] text-slate-200/80">Create Day ${
+                  planner.days.length + 1
+                }</div>
+              </button>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-end gap-2 border-t border-white/10 px-5 py-4">
+            <button
+              type="button"
+              data-action="cancel"
+              class="rounded-full bg-white/5 px-4 py-2 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+            >Cancel</button>
+          </div>
+        </div>
+      `;
+
+      const cleanup = () => {
+        overlay.remove();
+        window.removeEventListener("keydown", onKeyDown);
+      };
+
+      const close = (value) => {
+        cleanup();
+        resolve(value);
+      };
+
+      const onKeyDown = (e) => {
+        if (e.key === "Escape") close(null);
+      };
+      window.addEventListener("keydown", onKeyDown);
+
+      overlay.addEventListener("click", (e) => {
+        const backdrop = e.target.closest("[data-action='backdrop']");
+        if (backdrop) {
+          close(null);
+          return;
+        }
+
+        const cancel = e.target.closest("button[data-action='cancel']");
+        if (cancel) {
+          close(null);
+          return;
+        }
+
+        const newDayBtn = e.target.closest("button[data-action='newDay']");
+        if (newDayBtn) {
+          const id = addDay();
+          close(id);
+          return;
+        }
+
+        const dayBtn = e.target.closest("button[data-day-id]");
+        if (dayBtn) {
+          close(dayBtn.dataset.dayId || null);
+        }
+      });
+
+      document.body.appendChild(overlay);
+    });
+
+  const addPlaceFlow = async (placeId, { closeMapPopup = false } = {}) => {
+    const hadNoDays = planner.days.length === 0;
+    ensurePlannerHasDay();
+
+    if (hadNoDays) {
+      const result = addPlaceToDayId(placeId, planner.activeDayId);
+      sync({ keepView: true });
+      if (viewId === "planner") renderPlanner();
+      if (closeMapPopup) map.closePopup();
+      if (result.added) {
+        showToastAction(`Added to ${result.dayTitle} — tap to open Planner`, {
+          durationMs: 4500,
+          onClick: () => setView("planner"),
+        });
+      }
+      return;
+    }
+
+    const chosenDayId = await openDayPicker({ title: "Add to Planner", placeId });
+    if (!chosenDayId) return;
+
+    const result = addPlaceToDayId(placeId, chosenDayId);
+    sync({ keepView: true });
+    if (viewId === "planner") renderPlanner();
+    if (closeMapPopup) map.closePopup();
+
+    if (result.added) {
+      showToastAction(`Added to ${result.dayTitle} — tap to open Planner`, {
+        durationMs: 4500,
+        onClick: () => setView("planner"),
+      });
+    } else {
+      showToast(
+        result.reason === "exists" && result.dayTitle ? `Already in ${result.dayTitle}` : "Could not add",
+      );
+    }
+  };
+
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-action='popupAdd'][data-place-id]");
+    if (!btn) return;
+    const placeId = btn.dataset.placeId;
+    if (!placeId) return;
+    e.preventDefault();
+    addPlaceFlow(placeId, { closeMapPopup: true });
+  });
 
   const fitToPins = (animate = true) => {
     const bounds = computeBounds(state.filtered);
@@ -1201,7 +1460,7 @@ async function main() {
       places: state.filtered,
       selectedId: state.selectedId,
       statusById,
-      inDayPlaceIds: getActiveDayPlaceIds(),
+      inPlannerPlaceIds: getPlannerPlaceIds(),
     });
 
     const selectedMarker = state.selectedId ? markersById.get(state.selectedId) : null;
@@ -1216,6 +1475,8 @@ async function main() {
     state.filtered = filterPlaces(allPlaces, { query: state.query, category: state.category });
     const categories = buildCategories(allPlaces);
     renderChips({ categories, activeCategory: state.category });
+    setCategorySummaryUi();
+    applyCategoryExpandedUi();
     renderStats({
       total: allPlaces.length,
       pinned: allPlaces.filter(hasCoords).length,
@@ -1227,7 +1488,7 @@ async function main() {
       places: state.filtered,
       selectedId: state.selectedId,
       statusById,
-      inDayPlaceIds: getActiveDayPlaceIds(),
+      inPlannerPlaceIds: getPlannerPlaceIds(),
     });
     syncMarkers();
     sheet?.refresh?.();
@@ -1239,6 +1500,11 @@ async function main() {
     if (!btn) return;
     state.category = btn.dataset.category || "__all__";
     state.selectedId = null;
+    if (!mqDesktop.matches) {
+      categoriesExpanded = false;
+      saveCategoryExpanded(categoriesExpanded);
+      applyCategoryExpandedUi();
+    }
     sync();
   });
 
@@ -1267,15 +1533,7 @@ async function main() {
         return;
       }
       if (placeId && action === "addToDay") {
-        const result = addPlaceToActiveDay(placeId);
-        sync({ keepView: true });
-        if (result.added) {
-          showToastAction(`Added to ${result.dayTitle} — tap to open Planner`, {
-            durationMs: 4500,
-            onClick: () => setView("planner"),
-          });
-        }
-        else showToast(result.reason === "exists" ? "Already in this day" : "Could not add");
+        addPlaceFlow(placeId);
         return;
       }
       return;
@@ -1574,6 +1832,17 @@ async function main() {
     setView("planner");
     renderPlanner();
     showToast("Day added");
+  });
+
+  btnDayDelete?.addEventListener("click", () => {
+    const day = getActiveDay();
+    if (!day) return;
+    const ok = confirm(`Delete ${day.title}?\nThis will remove all stops in this day.`);
+    if (!ok) return;
+    deleteDayId(day.id);
+    sync({ keepView: true });
+    renderPlanner();
+    showToast("Day deleted");
   });
 
   plannerDaysEl?.addEventListener("click", (e) => {
