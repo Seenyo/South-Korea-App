@@ -24,6 +24,8 @@ const isTileRequest = (url) =>
   url.hostname === "c.basemaps.cartocdn.com" ||
   url.hostname === "d.basemaps.cartocdn.com";
 
+const isSupabaseRequest = (url) => url.hostname.endsWith(".supabase.co");
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
@@ -102,6 +104,9 @@ self.addEventListener("fetch", (event) => {
 
   // Cross-origin tiles: don't cache (storage heavy + provider policies).
   if (isTileRequest(url)) return;
+
+  // Supabase is dynamic API data: never cache (prevents stale sync).
+  if (isSupabaseRequest(url)) return;
 
   // Other cross-origin (fonts, CDN JS/CSS): cache-first.
   event.respondWith(cacheFirst(request, RUNTIME_CACHE));

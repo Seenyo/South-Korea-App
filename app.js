@@ -7,11 +7,59 @@ const PLANNER_KEY = "sc_trip_planner_v1";
 const VIEW_KEY = "sc_trip_view_v1";
 const INSTALL_TIP_KEY = "sc_trip_install_tip_v1";
 const CAT_EXPANDED_KEY = "sc_trip_cat_expanded_v1";
+const SYNC_SETTINGS_KEY = "sc_trip_sync_v1";
+const CLIENT_ID_KEY = "sc_trip_client_id_v1";
 
 function uid(prefix) {
   const p = prefix ? `${prefix}_` : "";
   if (globalThis.crypto?.randomUUID) return `${p}${globalThis.crypto.randomUUID()}`;
   return `${p}${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
+}
+
+function loadClientId() {
+  try {
+    const raw = localStorage.getItem(CLIENT_ID_KEY);
+    if (raw) return String(raw);
+    const next = uid("client");
+    localStorage.setItem(CLIENT_ID_KEY, next);
+    return next;
+  } catch {
+    return uid("client");
+  }
+}
+
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+  const keys = Object.keys(value).sort();
+  const parts = keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`);
+  return `{${parts.join(",")}}`;
+}
+
+function loadSyncSettings() {
+  try {
+    const raw = localStorage.getItem(SYNC_SETTINGS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const tripId = typeof parsed?.tripId === "string" ? parsed.tripId.trim() : "";
+    const joinCode = typeof parsed?.joinCode === "string" ? parsed.joinCode.trim() : "";
+    if (!tripId || !joinCode) return null;
+    return { tripId, joinCode };
+  } catch {
+    return null;
+  }
+}
+
+function saveSyncSettings(settings) {
+  try {
+    if (!settings) {
+      localStorage.removeItem(SYNC_SETTINGS_KEY);
+      return;
+    }
+    localStorage.setItem(SYNC_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // ignore
+  }
 }
 
 function loadStatus() {
@@ -777,6 +825,7 @@ async function main() {
   const categoryCaret = $("#categoryCaret");
   const btnDayAdd = $("#btnDayAdd");
   const btnDayDelete = $("#btnDayDelete");
+  const btnSync = $("#btnSync");
   const plannerDaysEl = $("#plannerDays");
   const plannerItemsEl = $("#plannerItems");
   const btnPlanRoute = $("#btnPlanRoute");
@@ -815,6 +864,727 @@ async function main() {
   let planner = loadPlanner();
   let viewId = loadViewId();
   let expandedPlannerItemId = null;
+  const clientId = loadClientId();
+
+  const SUPABASE_URL = "https://mpqbactsrbpoqtveqomm.supabase.co";
+  const SUPABASE_ANON_KEY =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1wcWJhY3RzcmJwb3F0dmVxb21tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwNDAzNzMsImV4cCI6MjA4MTYxNjM3M30.Ddjn-9Jkk7lvncMavUYRuUdSrXoHSdj0fCJVv9z9EIo";
+  const SUPABASE_JS_VERSION = "2.88.0";
+
+  const syncState = {
+    enabled: false,
+    connecting: false,
+    tripId: null,
+    joinCode: null,
+    client: null,
+    channel: null,
+    pushTimer: null,
+    pushInFlight: false,
+    plannerVersion: 0,
+    statusVersion: 0,
+    pushedPlannerVersion: 0,
+    pushedStatusVersion: 0,
+    suppressPush: false,
+  };
+
+  const setSyncUi = (state) => {
+    if (!btnSync) return;
+    const base = [
+      "rounded-full",
+      "px-3",
+      "py-1.5",
+      "text-xs",
+      "font-semibold",
+      "text-white",
+      "ring-1",
+      "transition",
+      "hover:bg-white/15",
+    ];
+    btnSync.className = base.join(" ");
+    btnSync.textContent = state === "on" ? "Sync ✓" : state === "connecting" ? "Sync…" : "Sync";
+    if (state === "on") {
+      btnSync.classList.add("bg-emerald-500/15", "ring-emerald-400/30");
+    } else if (state === "connecting") {
+      btnSync.classList.add("bg-amber-500/15", "ring-amber-400/30");
+    } else {
+      btnSync.classList.add("bg-white/10", "ring-white/10");
+    }
+  };
+
+  setSyncUi("off");
+
+  const randomJoinCode = () => {
+    try {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      let str = "";
+      for (const b of bytes) str += String.fromCharCode(b);
+      return btoa(str).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+    } catch {
+      return uid("join");
+    }
+  };
+
+  const parseTripParamsFromUrl = (urlLike) => {
+    try {
+      const u = new URL(String(urlLike), window.location.href);
+      const tripId = (u.searchParams.get("trip") || "").trim();
+      const joinCode = (u.searchParams.get("key") || "").trim();
+      if (!tripId || !joinCode) return null;
+      return { tripId, joinCode };
+    } catch {
+      return null;
+    }
+  };
+
+  const buildShareUrl = ({ tripId, joinCode }) => {
+    const u = new URL(window.location.href);
+    u.searchParams.set("trip", tripId);
+    u.searchParams.set("key", joinCode);
+    return u.toString();
+  };
+
+  const stripShareParamsFromUrl = () => {
+    const u = new URL(window.location.href);
+    u.searchParams.delete("trip");
+    u.searchParams.delete("key");
+    return u.toString();
+  };
+
+  const isEmptyPlanner = (p) => {
+    const days = Array.isArray(p?.days) ? p.days : [];
+    for (const d of days) {
+      if (Array.isArray(d?.items) && d.items.length) return false;
+    }
+    return true;
+  };
+
+  const isEmptyStatus = (s) => {
+    if (!s || typeof s !== "object") return true;
+    for (const v of Object.values(s)) {
+      if (v && typeof v === "object" && (v.favorite || v.visited)) return false;
+    }
+    return true;
+  };
+
+  const summarizeLocal = () => {
+    const dayCount = planner.days.length;
+    const stopCount = planner.days.reduce((n, d) => n + (d.items?.length || 0), 0);
+    const favorites = allPlaces.filter((p) => statusById?.[p.id]?.favorite).length;
+    const visited = allPlaces.filter((p) => statusById?.[p.id]?.visited).length;
+    return { dayCount, stopCount, favorites, visited };
+  };
+
+  const summarizeRemote = ({ planner: rp, status: rs }) => {
+    const p = normalizePlanner(rp);
+    const s = rs && typeof rs === "object" ? rs : {};
+    const dayCount = p.days.length;
+    const stopCount = p.days.reduce((n, d) => n + (d.items?.length || 0), 0);
+    const favorites = allPlaces.filter((pl) => s?.[pl.id]?.favorite).length;
+    const visited = allPlaces.filter((pl) => s?.[pl.id]?.visited).length;
+    return { dayCount, stopCount, favorites, visited };
+  };
+
+  const copyToClipboard = async (text) => {
+    const value = String(text || "");
+    if (!value) return false;
+    try {
+      await navigator.clipboard?.writeText?.(value);
+      return true;
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = value;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        ta.style.top = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        return ok;
+      } catch {
+        return false;
+      }
+    }
+  };
+
+  let supabaseModulePromise = null;
+  const getSupabaseClient = async () => {
+    if (syncState.client) return syncState.client;
+    if (!supabaseModulePromise) {
+      supabaseModulePromise = import(
+        `https://esm.sh/@supabase/supabase-js@${encodeURIComponent(SUPABASE_JS_VERSION)}`,
+      );
+    }
+    const mod = await supabaseModulePromise;
+    const createClient = mod?.createClient;
+    if (typeof createClient !== "function") throw new Error("Supabase client load failed");
+
+    syncState.client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+    });
+    return syncState.client;
+  };
+
+  const ensureAuthed = async (client) => {
+    const session = await client.auth.getSession();
+    if (session?.data?.session) return session.data.session;
+    const res = await client.auth.signInAnonymously();
+    if (res?.error) throw res.error;
+    const next = await client.auth.getSession();
+    if (next?.data?.session) return next.data.session;
+    throw new Error("Anonymous auth failed");
+  };
+
+  const openSyncConflictModal = ({ local, remote }) =>
+    new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "fixed inset-0 z-[2600] flex items-end md:items-center justify-center";
+
+      overlay.innerHTML = `
+        <div data-action="backdrop" class="absolute inset-0 bg-black/55 backdrop-blur-sm"></div>
+        <div class="relative w-full md:max-w-md md:rounded-3xl rounded-t-3xl border border-white/10 bg-slate-950/80 backdrop-blur-xl shadow-2xl">
+          <div class="border-b border-white/10 px-5 py-4">
+            <div class="text-base font-extrabold tracking-tight text-white">Choose data to keep</div>
+            <div class="mt-1 text-xs text-slate-300">Your device and the cloud have different data.</div>
+          </div>
+
+          <div class="px-5 py-4">
+            <div class="grid gap-3">
+              <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+                <div class="text-xs font-semibold text-slate-300">This device</div>
+                <div class="mt-2 text-sm font-extrabold text-white">${local.dayCount} days · ${
+                  local.stopCount
+                } stops</div>
+                <div class="mt-1 text-[11px] text-slate-300">${local.favorites} favorites · ${
+                  local.visited
+                } visited</div>
+              </div>
+              <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+                <div class="text-xs font-semibold text-slate-300">Cloud</div>
+                <div class="mt-2 text-sm font-extrabold text-white">${remote.dayCount} days · ${
+                  remote.stopCount
+                } stops</div>
+                <div class="mt-1 text-[11px] text-slate-300">${remote.favorites} favorites · ${
+                  remote.visited
+                } visited</div>
+              </div>
+            </div>
+
+            <div class="mt-4 grid gap-2">
+              <button
+                type="button"
+                data-action="useCloud"
+                class="w-full rounded-2xl bg-emerald-500/15 px-4 py-3 text-left ring-1 ring-emerald-400/30 transition hover:bg-emerald-500/20"
+              >
+                <div class="text-sm font-extrabold text-white">Use cloud</div>
+                <div class="mt-1 text-[11px] text-slate-200/80">Replace this device's data</div>
+              </button>
+
+              <button
+                type="button"
+                data-action="useLocal"
+                class="w-full rounded-2xl bg-rose-500/15 px-4 py-3 text-left ring-1 ring-rose-400/30 transition hover:bg-rose-500/20"
+              >
+                <div class="text-sm font-extrabold text-white">Upload local</div>
+                <div class="mt-1 text-[11px] text-slate-200/80">Replace the cloud data</div>
+              </button>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-end gap-2 border-t border-white/10 px-5 py-4">
+            <button
+              type="button"
+              data-action="cancel"
+              class="rounded-full bg-white/5 px-4 py-2 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+            >Cancel</button>
+          </div>
+        </div>
+      `;
+
+      const cleanup = () => {
+        overlay.remove();
+        window.removeEventListener("keydown", onKeyDown);
+      };
+
+      const close = (value) => {
+        cleanup();
+        resolve(value);
+      };
+
+      const onKeyDown = (e) => {
+        if (e.key === "Escape") close(null);
+      };
+      window.addEventListener("keydown", onKeyDown);
+
+      overlay.addEventListener("click", (e) => {
+        if (e.target.closest("[data-action='backdrop']")) return close(null);
+        if (e.target.closest("button[data-action='cancel']")) return close(null);
+        if (e.target.closest("button[data-action='useCloud']")) return close("cloud");
+        if (e.target.closest("button[data-action='useLocal']")) return close("local");
+      });
+
+      document.body.appendChild(overlay);
+    });
+
+  const applyRemoteState = ({ remotePlanner, remoteStatus }) => {
+    syncState.suppressPush = true;
+    try {
+      if (remotePlanner) {
+        planner = normalizePlanner(remotePlanner);
+        savePlanner(planner);
+      }
+      if (remoteStatus) {
+        statusById = remoteStatus && typeof remoteStatus === "object" ? remoteStatus : {};
+        saveStatus(statusById);
+      }
+    } finally {
+      syncState.suppressPush = false;
+    }
+  };
+
+  const subscribeToTrip = async (client) => {
+    if (!syncState.tripId) return;
+    if (syncState.channel) {
+      try {
+        await syncState.channel.unsubscribe();
+      } catch {
+        // ignore
+      }
+      syncState.channel = null;
+    }
+
+    syncState.channel = client
+      .channel(`trip:${syncState.tripId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "trips",
+          filter: `id=eq.${syncState.tripId}`,
+        },
+        (payload) => {
+          const next = payload?.new;
+          if (!next || typeof next !== "object") return;
+          if (next.updated_by && String(next.updated_by) === clientId) return;
+
+          const remotePlanner = next.planner;
+          const remoteStatus = next.status;
+          applyRemoteState({ remotePlanner, remoteStatus });
+
+          sync({ keepView: true });
+          if (viewId === "planner") renderPlanner();
+          showToast("Synced");
+        },
+      )
+      .subscribe();
+  };
+
+  const connectToTrip = async ({ tripId, joinCode }, { source = "manual" } = {}) => {
+    if (!tripId || !joinCode) return false;
+    if (syncState.connecting) return false;
+
+    syncState.connecting = true;
+    setSyncUi("connecting");
+
+    try {
+      const client = await getSupabaseClient();
+      const session = await ensureAuthed(client);
+      const userId = session?.user?.id;
+      if (!userId) throw new Error("Auth missing user");
+
+      const joinRes = await client
+        .from("trip_members")
+        .insert({ trip_id: tripId, user_id: userId, join_code: joinCode });
+      if (joinRes?.error && joinRes.error?.code !== "23505") throw joinRes.error;
+
+      const tripRes = await client
+        .from("trips")
+        .select("id,planner,status,join_code,updated_at,updated_by")
+        .eq("id", tripId)
+        .single();
+      if (tripRes?.error) throw tripRes.error;
+      const row = tripRes.data;
+
+      const remotePlanner = normalizePlanner(row?.planner);
+      const remoteStatus = row?.status && typeof row.status === "object" ? row.status : {};
+
+      const localHas = !isEmptyPlanner(planner) || !isEmptyStatus(statusById);
+      const remoteHas = !isEmptyPlanner(remotePlanner) || !isEmptyStatus(remoteStatus);
+
+      const localSig = stableStringify({ planner, statusById });
+      const remoteSig = stableStringify({ planner: remotePlanner, statusById: remoteStatus });
+
+      if (localHas && remoteHas && localSig !== remoteSig) {
+        const choice = await openSyncConflictModal({
+          local: summarizeLocal(),
+          remote: summarizeRemote({ planner: remotePlanner, status: remoteStatus }),
+        });
+
+        if (!choice) {
+          setSyncUi("off");
+          syncState.connecting = false;
+          return false;
+        }
+
+        if (choice === "cloud") {
+          applyRemoteState({ remotePlanner, remoteStatus });
+        } else if (choice === "local") {
+          await client
+            .from("trips")
+            .update({
+              planner,
+              status: statusById,
+              updated_by: clientId,
+            })
+            .eq("id", tripId);
+        }
+      } else if (remoteHas) {
+        applyRemoteState({ remotePlanner, remoteStatus });
+      }
+
+      syncState.enabled = true;
+      syncState.tripId = tripId;
+      syncState.joinCode = joinCode;
+      saveSyncSettings({ tripId, joinCode });
+
+      try {
+        const url = buildShareUrl({ tripId, joinCode });
+        window.history.replaceState({}, "", url);
+      } catch {
+        // ignore
+      }
+
+      await subscribeToTrip(client);
+
+      sync({ keepView: true });
+      if (viewId === "planner") renderPlanner();
+
+      showToast(source === "auto" ? "Sync connected" : "Connected");
+      setSyncUi("on");
+      return true;
+    } catch (err) {
+      const msg =
+        String(err?.message || err || "").includes("Anonymous") ||
+        String(err?.message || err || "").includes("signInAnonymously")
+          ? "Enable Anonymous sign-ins in Supabase"
+          : "Sync failed";
+      showToast(msg);
+      setSyncUi("off");
+      return false;
+    } finally {
+      syncState.connecting = false;
+    }
+  };
+
+  const createSharedTrip = async () => {
+    if (syncState.connecting) return null;
+    syncState.connecting = true;
+    setSyncUi("connecting");
+
+    try {
+      const client = await getSupabaseClient();
+      const session = await ensureAuthed(client);
+      const userId = session?.user?.id;
+      if (!userId) throw new Error("Auth missing user");
+
+      const joinCode = randomJoinCode();
+      const insertRes = await client
+        .from("trips")
+        .insert({
+          join_code: joinCode,
+          planner,
+          status: statusById,
+          updated_by: clientId,
+        })
+        .select("id,join_code")
+        .single();
+      if (insertRes?.error) throw insertRes.error;
+
+      const tripId = insertRes?.data?.id;
+      if (!tripId) throw new Error("Trip create failed");
+
+      const joinRes = await client
+        .from("trip_members")
+        .insert({ trip_id: tripId, user_id: userId, join_code: joinCode });
+      if (joinRes?.error && joinRes.error?.code !== "23505") throw joinRes.error;
+
+      syncState.enabled = true;
+      syncState.tripId = tripId;
+      syncState.joinCode = joinCode;
+      saveSyncSettings({ tripId, joinCode });
+
+      try {
+        window.history.replaceState({}, "", buildShareUrl({ tripId, joinCode }));
+      } catch {
+        // ignore
+      }
+
+      await subscribeToTrip(client);
+
+      setSyncUi("on");
+      showToast("Share link created");
+      return { tripId, joinCode };
+    } catch {
+      showToast("Could not create trip");
+      setSyncUi("off");
+      return null;
+    } finally {
+      syncState.connecting = false;
+    }
+  };
+
+  const disconnectSync = async () => {
+    syncState.enabled = false;
+    syncState.tripId = null;
+    syncState.joinCode = null;
+    saveSyncSettings(null);
+    setSyncUi("off");
+
+    if (syncState.channel) {
+      try {
+        await syncState.channel.unsubscribe();
+      } catch {
+        // ignore
+      }
+      syncState.channel = null;
+    }
+
+    try {
+      window.history.replaceState({}, "", stripShareParamsFromUrl());
+    } catch {
+      // ignore
+    }
+
+    showToast("Sync off");
+  };
+
+  const markPlannerDirty = () => {
+    if (!syncState.enabled) return;
+    if (syncState.suppressPush) return;
+    syncState.plannerVersion += 1;
+    scheduleTripPush();
+  };
+
+  const markStatusDirty = () => {
+    if (!syncState.enabled) return;
+    if (syncState.suppressPush) return;
+    syncState.statusVersion += 1;
+    scheduleTripPush();
+  };
+
+  const scheduleTripPush = () => {
+    if (!syncState.enabled) return;
+    if (syncState.suppressPush) return;
+    window.clearTimeout(syncState.pushTimer);
+    syncState.pushTimer = window.setTimeout(() => pushTripUpdates(), 900);
+  };
+
+  const pushTripUpdates = async () => {
+    if (!syncState.enabled) return;
+    if (syncState.suppressPush) return;
+    if (!syncState.tripId) return;
+    if (syncState.pushInFlight) return;
+
+    const shouldPushPlanner = syncState.plannerVersion !== syncState.pushedPlannerVersion;
+    const shouldPushStatus = syncState.statusVersion !== syncState.pushedStatusVersion;
+    if (!shouldPushPlanner && !shouldPushStatus) return;
+
+    const sentPlannerVersion = syncState.plannerVersion;
+    const sentStatusVersion = syncState.statusVersion;
+
+    const patch = { updated_by: clientId };
+    if (shouldPushPlanner) patch.planner = planner;
+    if (shouldPushStatus) patch.status = statusById;
+
+    syncState.pushInFlight = true;
+    try {
+      const client = await getSupabaseClient();
+      const res = await client.from("trips").update(patch).eq("id", syncState.tripId);
+      if (res?.error) throw res.error;
+
+      if (shouldPushPlanner) syncState.pushedPlannerVersion = sentPlannerVersion;
+      if (shouldPushStatus) syncState.pushedStatusVersion = sentStatusVersion;
+
+      if (
+        syncState.plannerVersion !== syncState.pushedPlannerVersion ||
+        syncState.statusVersion !== syncState.pushedStatusVersion
+      ) {
+        scheduleTripPush();
+      }
+    } catch {
+      // transient errors are expected on mobile networks; retry later.
+      window.clearTimeout(syncState.pushTimer);
+      syncState.pushTimer = window.setTimeout(() => pushTripUpdates(), 2500);
+    } finally {
+      syncState.pushInFlight = false;
+    }
+  };
+
+  const openSyncModal = () =>
+    new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "fixed inset-0 z-[2600] flex items-end md:items-center justify-center";
+
+      const render = () => {
+        const connected = !!(syncState.enabled && syncState.tripId && syncState.joinCode);
+        const shareUrl = connected ? buildShareUrl({ tripId: syncState.tripId, joinCode: syncState.joinCode }) : "";
+        const subtitle = connected
+          ? `Connected · Anyone with this link can edit`
+          : `Create a share link to sync Planner + Favorite/Visited`;
+
+        overlay.innerHTML = `
+          <div data-action="backdrop" class="absolute inset-0 bg-black/55 backdrop-blur-sm"></div>
+          <div class="relative w-full md:max-w-md md:rounded-3xl rounded-t-3xl border border-white/10 bg-slate-950/80 backdrop-blur-xl shadow-2xl">
+            <div class="border-b border-white/10 px-5 py-4">
+              <div class="text-base font-extrabold tracking-tight text-white">Sync & Share</div>
+              <div class="mt-1 text-xs text-slate-300">${escapeHtml(subtitle)}</div>
+            </div>
+
+            <div class="px-5 py-4">
+              ${
+                connected
+                  ? `
+                    <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+                      <div class="text-xs font-semibold text-slate-300">Share link</div>
+                      <div class="mt-2">
+                        <input
+                          id="syncShareUrl"
+                          type="text"
+                          readonly
+                          value="${escapeHtml(shareUrl)}"
+                          class="w-full rounded-2xl bg-black/25 px-3 py-2 text-xs text-slate-100 ring-1 ring-white/10 outline-none"
+                        />
+                      </div>
+                      <div class="mt-3 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          data-action="copy"
+                          class="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
+                        >Copy</button>
+                        <button
+                          type="button"
+                          data-action="disconnect"
+                          class="rounded-full bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+                        >Disconnect</button>
+                      </div>
+                    </div>
+                  `
+                  : `
+                    <div class="grid gap-3">
+                      <button
+                        type="button"
+                        data-action="create"
+                        class="w-full rounded-2xl bg-emerald-500/15 px-4 py-3 text-left ring-1 ring-emerald-400/30 transition hover:bg-emerald-500/20"
+                      >
+                        <div class="text-sm font-extrabold text-white">Create share link</div>
+                        <div class="mt-1 text-[11px] text-slate-200/80">Start syncing with friends</div>
+                      </button>
+
+                      <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+                        <div class="text-xs font-semibold text-slate-300">Join</div>
+                        <div class="mt-2 flex items-center gap-2">
+                          <input
+                            id="syncJoinInput"
+                            type="url"
+                            placeholder="Paste share link…"
+                            class="min-w-0 flex-1 rounded-2xl bg-black/25 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-400 ring-1 ring-white/10 outline-none"
+                          />
+                          <button
+                            type="button"
+                            data-action="join"
+                            class="shrink-0 rounded-2xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
+                          >Join</button>
+                        </div>
+                        <div class="mt-2 text-[11px] text-slate-400">Tip: open the share link directly to auto-join.</div>
+                      </div>
+                    </div>
+                  `
+              }
+            </div>
+
+            <div class="flex items-center justify-end gap-2 border-t border-white/10 px-5 py-4">
+              <button
+                type="button"
+                data-action="close"
+                class="rounded-full bg-white/5 px-4 py-2 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+              >Close</button>
+            </div>
+          </div>
+        `;
+      };
+
+      render();
+
+      const cleanup = () => {
+        overlay.remove();
+        window.removeEventListener("keydown", onKeyDown);
+      };
+      const close = () => {
+        cleanup();
+        resolve();
+      };
+      const onKeyDown = (e) => {
+        if (e.key === "Escape") close();
+      };
+      window.addEventListener("keydown", onKeyDown);
+
+      overlay.addEventListener("click", async (e) => {
+        if (e.target.closest("[data-action='backdrop']")) return close();
+        if (e.target.closest("button[data-action='close']")) return close();
+
+        const createBtn = e.target.closest("button[data-action='create']");
+        if (createBtn) {
+          createBtn.disabled = true;
+          const created = await createSharedTrip();
+          if (created) {
+            const url = buildShareUrl(created);
+            await copyToClipboard(url);
+            render();
+          } else {
+            createBtn.disabled = false;
+          }
+          return;
+        }
+
+        const joinBtn = e.target.closest("button[data-action='join']");
+        if (joinBtn) {
+          const input = overlay.querySelector("#syncJoinInput");
+          const link = input?.value?.trim();
+          const params = link ? parseTripParamsFromUrl(link) : null;
+          if (!params) {
+            showToast("Invalid link");
+            return;
+          }
+          joinBtn.disabled = true;
+          const ok = await connectToTrip(params, { source: "manual" });
+          joinBtn.disabled = false;
+          if (ok) render();
+          return;
+        }
+
+        const copyBtn = e.target.closest("button[data-action='copy']");
+        if (copyBtn) {
+          const input = overlay.querySelector("#syncShareUrl");
+          const url = input?.value || buildShareUrl({ tripId: syncState.tripId, joinCode: syncState.joinCode });
+          const ok = await copyToClipboard(url);
+          showToast(ok ? "Copied" : "Copy failed");
+          return;
+        }
+
+        const disconnectBtn = e.target.closest("button[data-action='disconnect']");
+        if (disconnectBtn) {
+          await disconnectSync();
+          render();
+        }
+      });
+
+      document.body.appendChild(overlay);
+    });
+
 
   const map = L.map("map", {
     zoomControl: false,
@@ -1155,6 +1925,7 @@ async function main() {
   const commitPlanner = (nextPlanner, { toast } = {}) => {
     planner = normalizePlanner(nextPlanner);
     savePlanner(planner);
+    markPlannerDirty();
     if (toast) showToast(toast);
   };
 
@@ -1513,6 +2284,7 @@ async function main() {
     const next = { ...current, [key]: !current[key] };
     statusById = { ...statusById, [placeId]: next };
     saveStatus(statusById);
+    markStatusDirty();
   };
 
   $("#placeList").addEventListener("click", (e) => {
@@ -1825,6 +2597,7 @@ async function main() {
 
   tabPlaces?.addEventListener("click", () => setView("places"));
   tabPlanner?.addEventListener("click", () => setView("planner"));
+  btnSync?.addEventListener("click", () => openSyncModal());
 
   btnDayAdd?.addEventListener("click", () => {
     addDay();
@@ -1915,13 +2688,17 @@ async function main() {
   let plannerSaveTimer = null;
   const schedulePlannerSave = () => {
     window.clearTimeout(plannerSaveTimer);
-    plannerSaveTimer = window.setTimeout(() => savePlanner(planner), 250);
+    plannerSaveTimer = window.setTimeout(() => {
+      savePlanner(planner);
+      markPlannerDirty();
+    }, 250);
   };
   const flushPlannerSave = () => {
     if (!plannerSaveTimer) return;
     window.clearTimeout(plannerSaveTimer);
     plannerSaveTimer = null;
     savePlanner(planner);
+    markPlannerDirty();
   };
 
   window.addEventListener("beforeunload", flushPlannerSave);
@@ -1982,6 +2759,7 @@ async function main() {
     expandedPlannerItemId = itemId;
     planner = normalizePlanner(planner);
     savePlanner(planner);
+    markPlannerDirty();
     renderPlanner();
     focusPlannerField(itemId, field);
   });
@@ -2370,6 +3148,16 @@ async function main() {
   }
 
   sheet?.onSnap?.(() => keepMyLocationInView(true));
+
+  const maybeAutoConnect = () => {
+    const fromUrl = parseTripParamsFromUrl(window.location.href);
+    const stored = loadSyncSettings();
+    const target = fromUrl || stored;
+    if (!target) return;
+    connectToTrip(target, { source: "auto" });
+  };
+
+  maybeAutoConnect();
 
   showToast("Loaded");
 }

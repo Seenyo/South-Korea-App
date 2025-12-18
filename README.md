@@ -20,6 +20,24 @@ Open `http://localhost:5173`.
 2) GitHub repo → **Settings** → **Pages** → Deploy from a branch → `main` / `/ (root)`
 3) Open the published URL (usually `https://<user>.github.io/<repo>/`)
 
+## Sync with friends (Supabase)
+
+GitHub Pages is static, so cross-device sync needs a backend. This app can sync:
+
+- ✅ Shared: Planner (days/stops/time/memo), Favorite / Visited
+- ❌ Not shared: Location tracking, Follow mode, map theme, UI state
+
+### 1) Supabase setup (one-time)
+
+1) Supabase Dashboard → **Authentication** → enable **Anonymous sign-ins**
+2) Supabase Dashboard → **SQL Editor** → run `supabase_setup.sql`
+
+### 2) Use it
+
+- Open the app → Planner → **Sync**
+- Create a shared trip → copy the share link → send to friends
+- Friends open the link and choose **Use cloud** / **Upload local** if asked
+
 ## PWA (Install)
 
 - Android (Chrome): open the site → tap **Install app** (toast) or browser menu → Install
