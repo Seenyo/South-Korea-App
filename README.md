@@ -29,7 +29,8 @@ Open `http://localhost:5173`.
 
 - Open the **Planner** tab
 - Tap **＋** on a place to add it to the active day
-- Reorder with **▲/▼**, remove with **✕**
+- Tap a stop to edit **Start/End time** + **Memo**
+- Stops are automatically sorted by time; remove with **✕**
 - Use **Export/Import** to back up / restore your plan
 
 ## Update pins

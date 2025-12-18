@@ -70,10 +70,38 @@ function saveThemeId(themeId) {
   }
 }
 
+function timeToMinutes(value) {
+  if (typeof value !== "string") return null;
+  const v = value.trim();
+  if (!v) return null;
+  const m = v.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return hh * 60 + mm;
+}
+
+function sortPlannerItemsByTime(items) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const decorated = items.map((it, idx) => {
+    const start = timeToMinutes(it?.startTime) ?? timeToMinutes(it?.endTime);
+    const end = timeToMinutes(it?.endTime);
+    return { it, idx, start: start ?? Infinity, end: end ?? Infinity };
+  });
+  decorated.sort((a, b) => {
+    if (a.start !== b.start) return a.start - b.start;
+    if (a.end !== b.end) return a.end - b.end;
+    return a.idx - b.idx;
+  });
+  return decorated.map((d) => d.it);
+}
+
 function buildDefaultPlanner() {
   const dayId = uid("day");
   return {
-    version: 1,
+    version: 2,
     activeDayId: dayId,
     days: [
       {
@@ -99,18 +127,32 @@ function normalizePlanner(raw) {
             .map((it) => ({
               id: typeof it.id === "string" && it.id ? it.id : uid("item"),
               placeId: it.placeId,
+              startTime:
+                typeof it.startTime === "string"
+                  ? it.startTime
+                  : typeof it.start === "string"
+                    ? it.start
+                    : "",
+              endTime:
+                typeof it.endTime === "string" ? it.endTime : typeof it.end === "string" ? it.end : "",
+              memo: typeof it.memo === "string" ? it.memo : typeof it.note === "string" ? it.note : "",
             }))
         : [],
     }));
 
   if (!normalizedDays.length) return buildDefaultPlanner();
 
-  const activeDayId =
-    typeof raw.activeDayId === "string" && normalizedDays.some((d) => d.id === raw.activeDayId)
-      ? raw.activeDayId
-      : normalizedDays[0].id;
+  const sortedDays = normalizedDays.map((day) => ({
+    ...day,
+    items: sortPlannerItemsByTime(day.items),
+  }));
 
-  return { version: 1, activeDayId, days: normalizedDays };
+  const activeDayId =
+    typeof raw.activeDayId === "string" && sortedDays.some((d) => d.id === raw.activeDayId)
+      ? raw.activeDayId
+      : sortedDays[0].id;
+
+  return { version: 2, activeDayId, days: sortedDays };
 }
 
 function loadPlanner() {
@@ -751,6 +793,7 @@ async function main() {
   let locSettings = loadLocSettings();
   let planner = loadPlanner();
   let viewId = loadViewId();
+  let expandedPlannerItemId = null;
 
   const map = L.map("map", {
     zoomControl: false,
@@ -1065,6 +1108,7 @@ async function main() {
   const addDay = () => {
     const dayId = uid("day");
     const n = planner.days.length + 1;
+    expandedPlannerItemId = null;
     commitPlanner({
       ...planner,
       activeDayId: dayId,
@@ -1082,6 +1126,7 @@ async function main() {
 
   const setActiveDayId = (dayId) => {
     if (!planner.days.some((d) => d.id === dayId)) return false;
+    expandedPlannerItemId = null;
     commitPlanner({ ...planner, activeDayId: dayId });
     return true;
   };
@@ -1100,7 +1145,7 @@ async function main() {
         d.id === day.id
           ? {
               ...d,
-              items: [...d.items, { id: uid("item"), placeId }],
+              items: [...d.items, { id: uid("item"), placeId, startTime: "", endTime: "", memo: "" }],
             }
           : d,
       ),
@@ -1339,10 +1384,10 @@ async function main() {
     }
   };
 
-  const renderPlannerItems = () => {
-    if (!plannerItemsEl) return;
-    const day = getActiveDay();
-    if (!day) {
+	  const renderPlannerItems = () => {
+	    if (!plannerItemsEl) return;
+	    const day = getActiveDay();
+	    if (!day) {
       plannerItemsEl.innerHTML = `
         <div class="p-6 text-center text-sm text-slate-300">
           <div class="font-extrabold text-slate-200">Planner</div>
@@ -1365,79 +1410,135 @@ async function main() {
         </div>
       `;
       return;
-    }
+	    }
 
-    const rows = [];
-    for (let idx = 0; idx < day.items.length; idx += 1) {
-      const item = day.items[idx];
-      const place = placeById.get(item.placeId);
-      const name = escapeHtml(place?.name || "Unknown place");
-      const cat = escapeHtml(formatCategoryLabel(place?.category));
-      const pinned = !!place && hasCoords(place);
-      const isSelected = state.selectedId === item.placeId;
-      const prev = idx > 0 ? placeById.get(day.items[idx - 1].placeId) : null;
-      const dist = prev && place ? haversineMeters(prev, place) : null;
-      const distText = dist != null ? formatDistance(dist) : "";
+	    const rows = [];
+	    for (let idx = 0; idx < day.items.length; idx += 1) {
+	      const item = day.items[idx];
+	      const place = placeById.get(item.placeId);
+	      const name = escapeHtml(place?.name || "Unknown place");
+	      const cat = escapeHtml(formatCategoryLabel(place?.category));
+	      const pinned = !!place && hasCoords(place);
+	      const isSelected = state.selectedId === item.placeId;
+	      const isExpanded = expandedPlannerItemId === item.id;
+	      const prev = idx > 0 ? placeById.get(day.items[idx - 1].placeId) : null;
+	      const dist = prev && place ? haversineMeters(prev, place) : null;
+	      const distText = dist != null ? formatDistance(dist) : "";
+	      const startTime = (item.startTime || "").toString().trim();
+	      const endTime = (item.endTime || "").toString().trim();
+	      const memo = (item.memo || "").toString();
+	      const memoPreview = memo.trim() ? memo.trim().split("\n")[0].slice(0, 80) : "";
+	      const timeLabel =
+	        startTime && endTime
+	          ? `${startTime}–${endTime}`
+	          : startTime
+	            ? `${startTime}–`
+	            : endTime
+	              ? `–${endTime}`
+	              : "";
 
-      rows.push(`
-        <div
-          class="group mb-2 w-full rounded-2xl p-3 text-left ring-1 transition ${
-            isSelected ? "bg-fuchsia-500/15 ring-fuchsia-400/35" : "bg-white/5 ring-white/10 hover:bg-white/8"
-          }"
-          data-item-id="${escapeHtml(item.id)}"
-          data-place-id="${escapeHtml(item.placeId)}"
-          role="button"
-          tabindex="0"
-        >
-          <div class="flex items-start justify-between gap-3">
-            <div class="min-w-0">
-              <div class="flex items-center gap-2">
-                <span class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/10 text-[11px] font-extrabold text-white ring-1 ring-white/10">${
-                  idx + 1
-                }</span>
-                <div class="truncate text-sm font-extrabold tracking-tight">${name}</div>
-              </div>
-              <div class="mt-1 truncate text-[11px] text-slate-300">${cat}</div>
-              <div class="mt-2 flex flex-wrap items-center gap-2">
-                ${
-                  pinned
-                    ? `<span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-200 ring-1 ring-emerald-400/25">PIN</span>`
-                    : `<span class="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-200 ring-1 ring-amber-400/25">NO PIN</span>`
-                }
-                ${distText ? `<span class="rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-bold text-slate-200 ring-1 ring-white/10">~${distText}</span>` : ""}
-              </div>
-            </div>
-            <div class="flex shrink-0 flex-col items-end gap-1">
-              <div class="flex items-center gap-1">
-                <button
-                  type="button"
-                  data-action="itemUp"
-                  data-item-id="${escapeHtml(item.id)}"
-                  class="inline-flex items-center justify-center rounded-full bg-white/5 px-2 py-1 text-[10px] font-extrabold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
-                  title="Move up"
-                >▲</button>
-                <button
-                  type="button"
-                  data-action="itemDown"
-                  data-item-id="${escapeHtml(item.id)}"
-                  class="inline-flex items-center justify-center rounded-full bg-white/5 px-2 py-1 text-[10px] font-extrabold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
-                  title="Move down"
-                >▼</button>
-                <button
-                  type="button"
-                  data-action="itemRemove"
-                  data-item-id="${escapeHtml(item.id)}"
-                  class="inline-flex items-center justify-center rounded-full bg-white/5 px-2 py-1 text-[10px] font-extrabold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
-                  title="Remove"
-                >✕</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      `);
-    }
-    plannerItemsEl.innerHTML = rows.join("");
-  };
+	      rows.push(`
+	        <div
+	          class="group mb-2 w-full rounded-2xl p-3 text-left ring-1 transition ${
+	            isSelected || isExpanded
+	              ? "bg-fuchsia-500/15 ring-fuchsia-400/35"
+	              : "bg-white/5 ring-white/10 hover:bg-white/8"
+	          }"
+	          data-item-id="${escapeHtml(item.id)}"
+	          data-place-id="${escapeHtml(item.placeId)}"
+	        >
+	          <div class="flex items-start justify-between gap-3">
+	            <button
+	              type="button"
+	              data-action="toggleItem"
+	              data-item-id="${escapeHtml(item.id)}"
+	              class="min-w-0 flex-1 text-left"
+	              aria-expanded="${isExpanded ? "true" : "false"}"
+	              title="Edit time & memo"
+	            >
+	              <div class="flex items-center gap-2">
+	                <span class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/10 text-[11px] font-extrabold text-white ring-1 ring-white/10">${
+	                  idx + 1
+	                }</span>
+	                <div class="truncate text-sm font-extrabold tracking-tight">${name}</div>
+	              </div>
+	              <div class="mt-1 truncate text-[11px] text-slate-300">${cat}</div>
+	              <div class="mt-2 flex flex-wrap items-center gap-2">
+	                <span class="rounded-full ${
+	                  timeLabel
+	                    ? "bg-cyan-400/15 text-cyan-200 ring-1 ring-cyan-300/25"
+	                    : "bg-white/5 text-slate-200 ring-1 ring-white/10"
+	                } px-2 py-0.5 text-[10px] font-bold">${escapeHtml(timeLabel || "Set time")}</span>
+	                ${
+	                  pinned
+	                    ? `<span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-200 ring-1 ring-emerald-400/25">PIN</span>`
+	                    : `<span class="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-200 ring-1 ring-amber-400/25">NO PIN</span>`
+	                }
+	                ${distText ? `<span class="rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-bold text-slate-200 ring-1 ring-white/10">~${distText}</span>` : ""}
+	                ${
+	                  memoPreview
+	                    ? `<span class="max-w-[14rem] truncate rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-bold text-slate-200 ring-1 ring-white/10">📝 ${escapeHtml(memoPreview)}</span>`
+	                    : ""
+	                }
+	              </div>
+	            </button>
+	            <div class="flex shrink-0 flex-col items-end gap-1">
+	              <button
+	                type="button"
+	                data-action="itemRemove"
+	                data-item-id="${escapeHtml(item.id)}"
+	                class="inline-flex items-center justify-center rounded-full bg-white/5 px-2 py-1 text-[10px] font-extrabold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+	                title="Remove"
+	              >✕</button>
+	            </div>
+	          </div>
+	          <div class="${isExpanded ? "" : "hidden"} mt-3 rounded-2xl bg-black/20 p-3 ring-1 ring-white/10">
+	            <div class="grid grid-cols-2 gap-2">
+	              <label class="block">
+	                <div class="mb-1 text-[11px] font-semibold text-slate-300">Start</div>
+	                <input
+	                  type="time"
+	                  value="${escapeHtml(startTime)}"
+	                  data-item-id="${escapeHtml(item.id)}"
+	                  data-field="startTime"
+	                  class="w-full rounded-2xl bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 ring-1 ring-white/10 outline-none transition focus:ring-2 focus:ring-fuchsia-400/60"
+	                />
+	              </label>
+	              <label class="block">
+	                <div class="mb-1 text-[11px] font-semibold text-slate-300">End</div>
+	                <input
+	                  type="time"
+	                  value="${escapeHtml(endTime)}"
+	                  data-item-id="${escapeHtml(item.id)}"
+	                  data-field="endTime"
+	                  class="w-full rounded-2xl bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 ring-1 ring-white/10 outline-none transition focus:ring-2 focus:ring-fuchsia-400/60"
+	                />
+	              </label>
+	            </div>
+	            <label class="mt-3 block">
+	              <div class="mb-1 text-[11px] font-semibold text-slate-300">Memo</div>
+	              <textarea
+	                rows="4"
+	                data-item-id="${escapeHtml(item.id)}"
+	                data-field="memo"
+	                placeholder="Notes…"
+	                class="w-full resize-none rounded-2xl bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 ring-1 ring-white/10 outline-none transition focus:ring-2 focus:ring-fuchsia-400/60"
+	              >${escapeHtml(memo)}</textarea>
+	            </label>
+	            <div class="mt-3 flex justify-end">
+	              <button
+	                type="button"
+	                data-action="collapseItem"
+	                data-item-id="${escapeHtml(item.id)}"
+	                class="rounded-full bg-white/10 px-4 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
+	              >Done</button>
+	            </div>
+	          </div>
+	        </div>
+	      `);
+	    }
+	    plannerItemsEl.innerHTML = rows.join("");
+	  };
 
   const renderPlanner = () => {
     renderPlannerDays();
@@ -1486,16 +1587,30 @@ async function main() {
   });
 
   plannerItemsEl?.addEventListener("click", (e) => {
+    const goPlacesBtn = e.target.closest("button[data-action='goPlaces']");
+    if (goPlacesBtn) {
+      setView("places");
+      return;
+    }
+
     const actionBtn = e.target.closest("button[data-action][data-item-id]");
     if (actionBtn) {
       const action = actionBtn.dataset.action;
       const itemId = actionBtn.dataset.itemId;
-      const day = getActiveDay();
-      if (!day) return;
-      const idx = day.items.findIndex((it) => it.id === itemId);
-      if (idx < 0) return;
+      if (!itemId) return;
+
+      if (action === "collapseItem") {
+        if (expandedPlannerItemId === itemId) expandedPlannerItemId = null;
+        renderPlannerItems();
+        sheet?.refresh?.();
+        return;
+      }
 
       if (action === "itemRemove") {
+        const day = getActiveDay();
+        if (!day) return;
+        if (!day.items.some((it) => it.id === itemId)) return;
+        if (expandedPlannerItemId === itemId) expandedPlannerItemId = null;
         commitPlanner({
           ...planner,
           days: planner.days.map((d) =>
@@ -1507,62 +1622,88 @@ async function main() {
         showToast("Removed");
         return;
       }
-
-      if (action === "itemUp" && idx > 0) {
-        const items = [...day.items];
-        const tmp = items[idx - 1];
-        items[idx - 1] = items[idx];
-        items[idx] = tmp;
-        commitPlanner({
-          ...planner,
-          days: planner.days.map((d) => (d.id === day.id ? { ...d, items } : d)),
-        });
-        sync({ keepView: true });
-        renderPlanner();
-        return;
-      }
-
-      if (action === "itemDown" && idx < day.items.length - 1) {
-        const items = [...day.items];
-        const tmp = items[idx + 1];
-        items[idx + 1] = items[idx];
-        items[idx] = tmp;
-        commitPlanner({
-          ...planner,
-          days: planner.days.map((d) => (d.id === day.id ? { ...d, items } : d)),
-        });
-        sync({ keepView: true });
-        renderPlanner();
-        return;
-      }
-      return;
     }
 
-    const goPlacesBtn = e.target.closest("button[data-action='goPlaces']");
-    if (goPlacesBtn) {
-      setView("places");
-      return;
-    }
-
-    const card = e.target.closest("[data-item-id][data-place-id]");
+    const toggleBtn = e.target.closest("button[data-action='toggleItem'][data-item-id]");
+    if (!toggleBtn) return;
+    const card = toggleBtn.closest("[data-item-id][data-place-id]");
     if (!card) return;
+    const itemId = card.dataset.itemId;
     const placeId = card.dataset.placeId;
+    if (!itemId || !placeId) return;
+
+    expandedPlannerItemId = expandedPlannerItemId === itemId ? null : itemId;
+
     const place = placeById.get(placeId);
-    if (!place) return;
-    state.selectedId = placeId;
-    syncSelection();
+    if (place) {
+      state.selectedId = placeId;
+      syncSelection();
+    }
+    renderPlannerItems();
+    sheet?.refresh?.();
   });
 
-  plannerItemsEl?.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" && e.key !== " ") return;
-    const card = e.target.closest("[data-item-id][data-place-id]");
-    if (!card) return;
-    e.preventDefault();
-    const placeId = card.dataset.placeId;
-    const place = placeById.get(placeId);
-    if (!place) return;
-    state.selectedId = placeId;
-    syncSelection();
+  let plannerSaveTimer = null;
+  const schedulePlannerSave = () => {
+    window.clearTimeout(plannerSaveTimer);
+    plannerSaveTimer = window.setTimeout(() => savePlanner(planner), 250);
+  };
+
+  const patchPlannerItem = (itemId, patch) => {
+    const day = getActiveDay();
+    if (!day) return false;
+    if (!day.items.some((it) => it.id === itemId)) return false;
+    planner = {
+      ...planner,
+      days: planner.days.map((d) =>
+        d.id === day.id
+          ? {
+              ...d,
+              items: d.items.map((it) => (it.id === itemId ? { ...it, ...patch } : it)),
+            }
+          : d,
+      ),
+    };
+    return true;
+  };
+
+  const focusPlannerField = (itemId, field) => {
+    if (!plannerItemsEl) return;
+    if (!window.matchMedia?.("(pointer: fine)")?.matches) return;
+    const escape = globalThis.CSS?.escape ? globalThis.CSS.escape : (s) => String(s).replaceAll('"', '\\"');
+    const el = plannerItemsEl.querySelector(
+      `[data-item-id="${escape(itemId)}"][data-field="${escape(field)}"]`,
+    );
+    if (el && typeof el.focus === "function") el.focus();
+  };
+
+  plannerItemsEl?.addEventListener("input", (e) => {
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    const fieldEl = target.closest("textarea[data-item-id][data-field]");
+    if (!fieldEl) return;
+    const itemId = fieldEl.dataset.itemId;
+    const field = fieldEl.dataset.field;
+    if (!itemId || field !== "memo") return;
+    if (!patchPlannerItem(itemId, { memo: fieldEl.value })) return;
+    schedulePlannerSave();
+  });
+
+  plannerItemsEl?.addEventListener("change", (e) => {
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    const fieldEl = target.closest("input[type='time'][data-item-id][data-field]");
+    if (!fieldEl) return;
+    const itemId = fieldEl.dataset.itemId;
+    const field = fieldEl.dataset.field;
+    if (!itemId || (field !== "startTime" && field !== "endTime")) return;
+    if (!patchPlannerItem(itemId, { [field]: fieldEl.value })) return;
+
+    expandedPlannerItemId = itemId;
+    planner = normalizePlanner(planner);
+    savePlanner(planner);
+    renderPlanner();
+    focusPlannerField(itemId, field);
   });
 
   btnDayClear?.addEventListener("click", () => {
