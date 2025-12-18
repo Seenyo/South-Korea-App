@@ -16,6 +16,18 @@ function uid(prefix) {
   return `${p}${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
 }
 
+function uuidv4() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  if (!globalThis.crypto?.getRandomValues) return uid("uuid");
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  // RFC 4122 v4
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function loadClientId() {
   try {
     const raw = localStorage.getItem(CLIENT_ID_KEY);
@@ -1299,21 +1311,30 @@ async function main() {
       const userId = session?.user?.id;
       if (!userId) throw new Error("Auth missing user");
 
-      const joinCode = randomJoinCode();
-      const insertRes = await client
-        .from("trips")
-        .insert({
+      const tripId = uuidv4();
+
+      let joinCode = randomJoinCode();
+      let insertOk = false;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const insertRes = await client.from("trips").insert({
+          id: tripId,
           join_code: joinCode,
           planner,
           status: statusById,
           updated_by: clientId,
-        })
-        .select("id,join_code")
-        .single();
-      if (insertRes?.error) throw insertRes.error;
-
-      const tripId = insertRes?.data?.id;
-      if (!tripId) throw new Error("Trip create failed");
+        });
+        if (!insertRes?.error) {
+          insertOk = true;
+          break;
+        }
+        // Collision (extremely rare). Regenerate join code and retry.
+        if (insertRes.error?.code === "23505") {
+          joinCode = randomJoinCode();
+          continue;
+        }
+        throw insertRes.error;
+      }
+      if (!insertOk) throw new Error("Trip create failed");
 
       const joinRes = await client
         .from("trip_members")
