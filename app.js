@@ -1648,6 +1648,17 @@ async function main() {
     window.clearTimeout(plannerSaveTimer);
     plannerSaveTimer = window.setTimeout(() => savePlanner(planner), 250);
   };
+  const flushPlannerSave = () => {
+    if (!plannerSaveTimer) return;
+    window.clearTimeout(plannerSaveTimer);
+    plannerSaveTimer = null;
+    savePlanner(planner);
+  };
+
+  window.addEventListener("beforeunload", flushPlannerSave);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) flushPlannerSave();
+  });
 
   const patchPlannerItem = (itemId, patch) => {
     const day = getActiveDay();
