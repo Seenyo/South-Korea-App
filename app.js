@@ -3,6 +3,15 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const STATUS_KEY = "sc_trip_status_v1";
 const LOC_SETTINGS_KEY = "sc_trip_loc_settings_v1";
 const THEME_KEY = "sc_trip_map_theme_v1";
+const PLANNER_KEY = "sc_trip_planner_v1";
+const VIEW_KEY = "sc_trip_view_v1";
+const INSTALL_TIP_KEY = "sc_trip_install_tip_v1";
+
+function uid(prefix) {
+  const p = prefix ? `${prefix}_` : "";
+  if (globalThis.crypto?.randomUUID) return `${p}${globalThis.crypto.randomUUID()}`;
+  return `${p}${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
+}
 
 function loadStatus() {
   try {
@@ -61,15 +70,234 @@ function saveThemeId(themeId) {
   }
 }
 
+function buildDefaultPlanner() {
+  const dayId = uid("day");
+  return {
+    version: 1,
+    activeDayId: dayId,
+    days: [
+      {
+        id: dayId,
+        title: "Day 1",
+        items: [],
+      },
+    ],
+  };
+}
+
+function normalizePlanner(raw) {
+  if (!raw || typeof raw !== "object") return buildDefaultPlanner();
+  const days = Array.isArray(raw.days) ? raw.days : [];
+  const normalizedDays = days
+    .filter((d) => d && typeof d === "object")
+    .map((d, idx) => ({
+      id: typeof d.id === "string" && d.id ? d.id : uid("day"),
+      title: typeof d.title === "string" && d.title ? d.title : `Day ${idx + 1}`,
+      items: Array.isArray(d.items)
+        ? d.items
+            .filter((it) => it && typeof it === "object" && typeof it.placeId === "string" && it.placeId)
+            .map((it) => ({
+              id: typeof it.id === "string" && it.id ? it.id : uid("item"),
+              placeId: it.placeId,
+            }))
+        : [],
+    }));
+
+  if (!normalizedDays.length) return buildDefaultPlanner();
+
+  const activeDayId =
+    typeof raw.activeDayId === "string" && normalizedDays.some((d) => d.id === raw.activeDayId)
+      ? raw.activeDayId
+      : normalizedDays[0].id;
+
+  return { version: 1, activeDayId, days: normalizedDays };
+}
+
+function loadPlanner() {
+  try {
+    const raw = localStorage.getItem(PLANNER_KEY);
+    if (!raw) return buildDefaultPlanner();
+    return normalizePlanner(JSON.parse(raw));
+  } catch {
+    return buildDefaultPlanner();
+  }
+}
+
+function savePlanner(planner) {
+  try {
+    localStorage.setItem(PLANNER_KEY, JSON.stringify(planner));
+  } catch {
+    // ignore
+  }
+}
+
+function loadViewId() {
+  try {
+    const raw = localStorage.getItem(VIEW_KEY);
+    return raw === "planner" ? "planner" : "places";
+  } catch {
+    return "places";
+  }
+}
+
+function saveViewId(viewId) {
+  try {
+    localStorage.setItem(VIEW_KEY, viewId);
+  } catch {
+    // ignore
+  }
+}
+
 function showToast(message, { durationMs = 1800 } = {}) {
   const el = $("#toast");
   if (!el) return;
   el.textContent = message;
   el.classList.remove("hidden");
+  el.dataset.clickable = "false";
+  el.onclick = null;
   window.clearTimeout(showToast._t);
   showToast._t = window.setTimeout(() => {
     el.classList.add("hidden");
+    el.dataset.clickable = "false";
+    el.onclick = null;
   }, durationMs);
+}
+
+function showToastAction(message, { durationMs = 5000, onClick } = {}) {
+  if (typeof onClick !== "function") {
+    showToast(message, { durationMs });
+    return;
+  }
+  const el = $("#toast");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.remove("hidden");
+  el.dataset.clickable = "true";
+  el.onclick = () => onClick();
+  window.clearTimeout(showToast._t);
+  showToast._t = window.setTimeout(() => {
+    el.classList.add("hidden");
+    el.dataset.clickable = "false";
+    el.onclick = null;
+  }, durationMs);
+}
+
+function ensureTrailingSlashPath() {
+  try {
+    const { pathname, search, hash } = window.location;
+    if (pathname.endsWith("/")) return false;
+    const last = pathname.split("/").pop() || "";
+    if (last.includes(".")) return false;
+    window.location.replace(`${pathname}/${search}${hash}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isStandalone() {
+  try {
+    return (
+      window.matchMedia?.("(display-mode: standalone)")?.matches ||
+      window.navigator?.standalone === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isIos() {
+  const ua = navigator.userAgent || "";
+  return /iPad|iPhone|iPod/i.test(ua);
+}
+
+function registerInstallPrompt() {
+  let deferred = null;
+
+  const maybeShow = () => {
+    if (!deferred) return;
+    if (isStandalone()) return;
+    showToastAction("Install app — tap to add", {
+      durationMs: 9000,
+      onClick: async () => {
+        try {
+          deferred.prompt?.();
+          const choice = await deferred.userChoice;
+          const outcome = choice?.outcome;
+          showToast(outcome === "accepted" ? "Installing…" : "Install dismissed");
+        } catch {
+          // ignore
+        } finally {
+          deferred = null;
+        }
+      },
+    });
+  };
+
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferred = e;
+    maybeShow();
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferred = null;
+    showToast("App installed");
+  });
+
+  window.addEventListener("load", () => {
+    maybeShow();
+    if (isStandalone()) return;
+    if (!isIos()) return;
+    try {
+      if (localStorage.getItem(INSTALL_TIP_KEY) === "1") return;
+      localStorage.setItem(INSTALL_TIP_KEY, "1");
+      showToast("Install: Share → Add to Home Screen", { durationMs: 7000 });
+    } catch {
+      // ignore
+    }
+  });
+}
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  if (!window.isSecureContext) return;
+  if (ensureTrailingSlashPath()) return;
+
+  const onControllerChange = () => window.location.reload();
+
+  window.addEventListener("load", async () => {
+    try {
+      const reg = await navigator.serviceWorker.register("./sw.js", { scope: "./" });
+
+      const promptUpdate = () => {
+        if (!reg.waiting) return;
+        showToastAction("Update available — tap to reload", {
+          durationMs: 8000,
+          onClick: () => {
+            navigator.serviceWorker.addEventListener("controllerchange", onControllerChange, {
+              once: true,
+            });
+            reg.waiting.postMessage({ type: "SKIP_WAITING" });
+          },
+        });
+      };
+
+      if (reg.waiting && navigator.serviceWorker.controller) promptUpdate();
+
+      reg.addEventListener("updatefound", () => {
+        const worker = reg.installing;
+        if (!worker) return;
+        worker.addEventListener("statechange", () => {
+          if (worker.state !== "installed") return;
+          if (navigator.serviceWorker.controller) promptUpdate();
+          else showToast("Offline ready");
+        });
+      });
+    } catch {
+      // ignore
+    }
+  });
 }
 
 function clamp(value, min, max) {
@@ -104,6 +332,28 @@ function categoryStyle(category) {
 
 function hasCoords(place) {
   return typeof place.lat === "number" && typeof place.lon === "number";
+}
+
+function haversineMeters(a, b) {
+  if (!a || !b) return null;
+  if (!hasCoords(a) || !hasCoords(b)) return null;
+  const R = 6371_000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+  return R * c;
+}
+
+function formatDistance(meters) {
+  if (typeof meters !== "number" || !Number.isFinite(meters)) return "";
+  if (meters < 950) return `${Math.round(meters)} m`;
+  return `${(meters / 1000).toFixed(1)} km`;
 }
 
 function normalize(text) {
@@ -186,6 +436,18 @@ function createClusterGroup() {
       const html = `<div class="cluster" style="background: linear-gradient(135deg, ${c1}, ${c2});">${count}</div>`;
       return L.divIcon({ html, className: "", iconSize: [42, 42] });
     },
+  });
+}
+
+function createDayNumberIcon(number, { visited = false } = {}) {
+  const n = typeof number === "number" && Number.isFinite(number) ? Math.max(1, Math.round(number)) : "";
+  const klass = `day-num${visited ? " day-num--visited" : ""}`;
+  return L.divIcon({
+    className: "",
+    html: `<div class="${klass}">${n}</div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+    popupAnchor: [0, -14],
   });
 }
 
@@ -292,7 +554,7 @@ function renderStats({ total, pinned, favorites, visited, generatedAt }) {
   }`;
 }
 
-function renderList({ places, selectedId, statusById }) {
+function renderList({ places, selectedId, statusById, inDayPlaceIds }) {
   const root = $("#placeList");
   root.innerHTML = "";
 
@@ -312,6 +574,7 @@ function renderList({ places, selectedId, statusById }) {
     const isSelected = place.id === selectedId;
     const isFavorite = !!statusById?.[place.id]?.favorite;
     const isVisited = !!statusById?.[place.id]?.visited;
+    const isInDay = !!inDayPlaceIds?.has?.(place.id);
 
     const el = document.createElement("div");
     el.dataset.placeId = place.id;
@@ -363,6 +626,19 @@ function renderList({ places, selectedId, statusById }) {
         title="行った"
       >✓</button>
     `;
+    const addBtn = `
+      <button
+        type="button"
+        data-action="addToDay"
+        data-place-id="${escapeHtml(place.id)}"
+        class="inline-flex items-center justify-center rounded-full px-2 py-1 text-[10px] font-extrabold ring-1 transition ${
+          isInDay
+            ? "bg-cyan-400/20 text-cyan-200 ring-cyan-300/30"
+            : "bg-white/5 text-slate-200 ring-white/10 hover:bg-white/10"
+        }"
+        title="${isInDay ? "Already in this day" : "Add to planner day"}"
+      >＋</button>
+    `;
 
     el.innerHTML = `
       <div class="flex items-start justify-between gap-3">
@@ -380,6 +656,7 @@ function renderList({ places, selectedId, statusById }) {
           <div class="mt-1 flex items-center gap-1">
             ${favoriteBtn}
             ${visitedBtn}
+            ${addBtn}
           </div>
         </div>
       </div>
@@ -430,6 +707,20 @@ async function main() {
   const btnTheme = $("#btnTheme");
   const searchInput = $("#search");
   const btnClearSearch = $("#btnClearSearch");
+  const tabPlaces = $("#tabPlaces");
+  const tabPlanner = $("#tabPlanner");
+  const placesHeader = $("#placesHeader");
+  const plannerHeader = $("#plannerHeader");
+  const panelPlaces = $("#panelPlaces");
+  const panelPlanner = $("#panelPlanner");
+  const btnDayAdd = $("#btnDayAdd");
+  const plannerDaysEl = $("#plannerDays");
+  const plannerItemsEl = $("#plannerItems");
+  const btnPlanRoute = $("#btnPlanRoute");
+  const btnPlanFit = $("#btnPlanFit");
+  const btnPlanExport = $("#btnPlanExport");
+  const planImportEl = $("#planImport");
+  const btnDayClear = $("#btnDayClear");
 
   let data;
   try {
@@ -455,8 +746,11 @@ async function main() {
   }
 
   const allPlaces = data.places || [];
+  const placeById = new Map(allPlaces.map((p) => [p.id, p]));
   let statusById = loadStatus();
   let locSettings = loadLocSettings();
+  let planner = loadPlanner();
+  let viewId = loadViewId();
 
   const map = L.map("map", {
     zoomControl: false,
@@ -547,6 +841,15 @@ async function main() {
 
   const clusters = createClusterGroup();
   clusters.addTo(map);
+
+  const plannerLinePane = map.createPane("plannerLine");
+  plannerLinePane.style.zIndex = "590";
+  plannerLinePane.style.pointerEvents = "none";
+
+  const plannerMarkerPane = map.createPane("plannerMarker");
+  plannerMarkerPane.style.zIndex = "640";
+
+  const plannerLayer = L.layerGroup().addTo(map);
 
   const sheetEl = $("#sheet");
   const sheetHandle = $("#sheetHandle");
@@ -744,6 +1047,67 @@ async function main() {
     filtered: allPlaces,
   };
 
+  const getActiveDay = () =>
+    planner.days.find((d) => d.id === planner.activeDayId) || planner.days[0] || null;
+
+  const getActiveDayPlaceIds = () => {
+    const day = getActiveDay();
+    const ids = day?.items?.map?.((it) => it.placeId) || [];
+    return new Set(ids);
+  };
+
+  const commitPlanner = (nextPlanner, { toast } = {}) => {
+    planner = normalizePlanner(nextPlanner);
+    savePlanner(planner);
+    if (toast) showToast(toast);
+  };
+
+  const addDay = () => {
+    const dayId = uid("day");
+    const n = planner.days.length + 1;
+    commitPlanner({
+      ...planner,
+      activeDayId: dayId,
+      days: [
+        ...planner.days,
+        {
+          id: dayId,
+          title: `Day ${n}`,
+          items: [],
+        },
+      ],
+    });
+    return dayId;
+  };
+
+  const setActiveDayId = (dayId) => {
+    if (!planner.days.some((d) => d.id === dayId)) return false;
+    commitPlanner({ ...planner, activeDayId: dayId });
+    return true;
+  };
+
+  const addPlaceToActiveDay = (placeId) => {
+    const day = getActiveDay();
+    if (!day) {
+      commitPlanner(buildDefaultPlanner());
+      return { added: false, reason: "no-day" };
+    }
+    if (day.items.some((it) => it.placeId === placeId)) return { added: false, reason: "exists" };
+
+    commitPlanner({
+      ...planner,
+      days: planner.days.map((d) =>
+        d.id === day.id
+          ? {
+              ...d,
+              items: [...d.items, { id: uid("item"), placeId }],
+            }
+          : d,
+      ),
+    });
+    return { added: true, dayTitle: day.title };
+  };
+
   const fitToPins = (animate = true) => {
     const bounds = computeBounds(state.filtered);
     if (!bounds) {
@@ -779,7 +1143,7 @@ async function main() {
 
   const syncSelection = () => {
     for (const [id, marker] of markersById.entries()) {
-      const place = allPlaces.find((p) => p.id === id);
+      const place = placeById.get(id);
       if (!place) continue;
       const icon = createPinIcon({
         category: place.category || "",
@@ -788,7 +1152,12 @@ async function main() {
       });
       marker.setIcon(icon);
     }
-    renderList({ places: state.filtered, selectedId: state.selectedId, statusById });
+    renderList({
+      places: state.filtered,
+      selectedId: state.selectedId,
+      statusById,
+      inDayPlaceIds: getActiveDayPlaceIds(),
+    });
 
     const selectedMarker = state.selectedId ? markersById.get(state.selectedId) : null;
     if (!selectedMarker) return;
@@ -809,7 +1178,12 @@ async function main() {
       visited: allPlaces.filter((p) => statusById?.[p.id]?.visited).length,
       generatedAt: data.meta?.generatedAt,
     });
-    renderList({ places: state.filtered, selectedId: state.selectedId, statusById });
+    renderList({
+      places: state.filtered,
+      selectedId: state.selectedId,
+      statusById,
+      inDayPlaceIds: getActiveDayPlaceIds(),
+    });
     syncMarkers();
     sheet?.refresh?.();
     if (!keepView) fitToPins(false);
@@ -845,6 +1219,18 @@ async function main() {
         toggleStatus(placeId, "visited");
         sync({ keepView: true });
         showToast(statusById?.[placeId]?.visited ? "Visited" : "Unvisited");
+        return;
+      }
+      if (placeId && action === "addToDay") {
+        const result = addPlaceToActiveDay(placeId);
+        sync({ keepView: true });
+        if (result.added) {
+          showToastAction(`Added to ${result.dayTitle} — tap to open Planner`, {
+            durationMs: 4500,
+            onClick: () => setView("planner"),
+          });
+        }
+        else showToast(result.reason === "exists" ? "Already in this day" : "Could not add");
         return;
       }
       return;
@@ -885,6 +1271,454 @@ async function main() {
     fitToPins(true);
     showToast("Fit to pins");
   });
+
+  const clearPlannerOverlay = () => plannerLayer.clearLayers();
+
+  const renderPlannerOverlay = () => {
+    clearPlannerOverlay();
+    if (viewId !== "planner") return;
+
+    const day = getActiveDay();
+    if (!day) return;
+
+    const latLngs = [];
+    for (let idx = 0; idx < day.items.length; idx += 1) {
+      const item = day.items[idx];
+      const place = placeById.get(item.placeId);
+      if (!place || !hasCoords(place)) continue;
+      latLngs.push([place.lat, place.lon]);
+    }
+
+    if (latLngs.length >= 2) {
+      L.polyline(latLngs, {
+        pane: "plannerLine",
+        color: "#fb7185",
+        weight: 4,
+        opacity: 0.55,
+        lineCap: "round",
+        lineJoin: "round",
+        interactive: false,
+      }).addTo(plannerLayer);
+    }
+
+    for (let idx = 0; idx < day.items.length; idx += 1) {
+      const item = day.items[idx];
+      const place = placeById.get(item.placeId);
+      if (!place || !hasCoords(place)) continue;
+      const visited = !!statusById?.[place.id]?.visited;
+      const marker = L.marker([place.lat, place.lon], {
+        pane: "plannerMarker",
+        icon: createDayNumberIcon(idx + 1, { visited }),
+        keyboard: false,
+      });
+      marker.on("click", () => {
+        state.selectedId = place.id;
+        syncSelection();
+      });
+      marker.addTo(plannerLayer);
+    }
+  };
+
+  const renderPlannerDays = () => {
+    if (!plannerDaysEl) return;
+    plannerDaysEl.innerHTML = "";
+    for (const day of planner.days) {
+      const active = day.id === planner.activeDayId;
+      const el = document.createElement("button");
+      el.type = "button";
+      el.dataset.dayId = day.id;
+      el.className = [
+        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-extrabold ring-1 transition",
+        active
+          ? "bg-white/10 text-white ring-white/20"
+          : "bg-white/5 text-slate-200 ring-white/10 hover:bg-white/10",
+      ].join(" ");
+      const count = day.items.length;
+      el.innerHTML = `<span>${escapeHtml(day.title)}</span><span class="rounded-full bg-white/10 px-1.5 py-0.5 text-[9px] text-slate-200 ring-1 ring-white/10">${count}</span>`;
+      plannerDaysEl.appendChild(el);
+    }
+  };
+
+  const renderPlannerItems = () => {
+    if (!plannerItemsEl) return;
+    const day = getActiveDay();
+    if (!day) {
+      plannerItemsEl.innerHTML = `
+        <div class="p-6 text-center text-sm text-slate-300">
+          <div class="font-extrabold text-slate-200">Planner</div>
+          <div class="mt-2">No days found.</div>
+        </div>
+      `;
+      return;
+    }
+
+    if (!day.items.length) {
+      plannerItemsEl.innerHTML = `
+        <div class="p-6 text-center text-sm text-slate-300">
+          <div class="font-extrabold text-slate-200">No places yet</div>
+          <div class="mt-2">Go to Places and tap <span class="font-extrabold">＋</span> to add stops.</div>
+          <button
+            type="button"
+            data-action="goPlaces"
+            class="mt-4 rounded-full bg-white/10 px-4 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
+          >Go to Places</button>
+        </div>
+      `;
+      return;
+    }
+
+    const rows = [];
+    for (let idx = 0; idx < day.items.length; idx += 1) {
+      const item = day.items[idx];
+      const place = placeById.get(item.placeId);
+      const name = escapeHtml(place?.name || "Unknown place");
+      const cat = escapeHtml(formatCategoryLabel(place?.category));
+      const pinned = !!place && hasCoords(place);
+      const isSelected = state.selectedId === item.placeId;
+      const prev = idx > 0 ? placeById.get(day.items[idx - 1].placeId) : null;
+      const dist = prev && place ? haversineMeters(prev, place) : null;
+      const distText = dist != null ? formatDistance(dist) : "";
+
+      rows.push(`
+        <div
+          class="group mb-2 w-full rounded-2xl p-3 text-left ring-1 transition ${
+            isSelected ? "bg-fuchsia-500/15 ring-fuchsia-400/35" : "bg-white/5 ring-white/10 hover:bg-white/8"
+          }"
+          data-item-id="${escapeHtml(item.id)}"
+          data-place-id="${escapeHtml(item.placeId)}"
+          role="button"
+          tabindex="0"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/10 text-[11px] font-extrabold text-white ring-1 ring-white/10">${
+                  idx + 1
+                }</span>
+                <div class="truncate text-sm font-extrabold tracking-tight">${name}</div>
+              </div>
+              <div class="mt-1 truncate text-[11px] text-slate-300">${cat}</div>
+              <div class="mt-2 flex flex-wrap items-center gap-2">
+                ${
+                  pinned
+                    ? `<span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-200 ring-1 ring-emerald-400/25">PIN</span>`
+                    : `<span class="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-200 ring-1 ring-amber-400/25">NO PIN</span>`
+                }
+                ${distText ? `<span class="rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-bold text-slate-200 ring-1 ring-white/10">~${distText}</span>` : ""}
+              </div>
+            </div>
+            <div class="flex shrink-0 flex-col items-end gap-1">
+              <div class="flex items-center gap-1">
+                <button
+                  type="button"
+                  data-action="itemUp"
+                  data-item-id="${escapeHtml(item.id)}"
+                  class="inline-flex items-center justify-center rounded-full bg-white/5 px-2 py-1 text-[10px] font-extrabold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+                  title="Move up"
+                >▲</button>
+                <button
+                  type="button"
+                  data-action="itemDown"
+                  data-item-id="${escapeHtml(item.id)}"
+                  class="inline-flex items-center justify-center rounded-full bg-white/5 px-2 py-1 text-[10px] font-extrabold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+                  title="Move down"
+                >▼</button>
+                <button
+                  type="button"
+                  data-action="itemRemove"
+                  data-item-id="${escapeHtml(item.id)}"
+                  class="inline-flex items-center justify-center rounded-full bg-white/5 px-2 py-1 text-[10px] font-extrabold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+                  title="Remove"
+                >✕</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `);
+    }
+    plannerItemsEl.innerHTML = rows.join("");
+  };
+
+  const renderPlanner = () => {
+    renderPlannerDays();
+    renderPlannerItems();
+    renderPlannerOverlay();
+    sheet?.refresh?.();
+  };
+
+  const setView = (nextViewId, { persist = true } = {}) => {
+    viewId = nextViewId === "planner" ? "planner" : "places";
+    if (persist) saveViewId(viewId);
+
+    if (tabPlaces) tabPlaces.dataset.active = viewId === "places" ? "true" : "false";
+    if (tabPlanner) tabPlanner.dataset.active = viewId === "planner" ? "true" : "false";
+
+    placesHeader?.classList.toggle("hidden", viewId !== "places");
+    panelPlaces?.classList.toggle("hidden", viewId !== "places");
+    plannerHeader?.classList.toggle("hidden", viewId !== "planner");
+    panelPlanner?.classList.toggle("hidden", viewId !== "planner");
+
+    if (viewId === "planner") renderPlanner();
+    else clearPlannerOverlay();
+
+    sheet?.refresh?.();
+  };
+
+  tabPlaces?.addEventListener("click", () => setView("places"));
+  tabPlanner?.addEventListener("click", () => setView("planner"));
+
+  btnDayAdd?.addEventListener("click", () => {
+    addDay();
+    sync({ keepView: true });
+    setView("planner");
+    renderPlanner();
+    showToast("Day added");
+  });
+
+  plannerDaysEl?.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-day-id]");
+    if (!btn) return;
+    if (!setActiveDayId(btn.dataset.dayId)) return;
+    sync({ keepView: true });
+    renderPlanner();
+    const day = getActiveDay();
+    if (day) showToast(day.title);
+  });
+
+  plannerItemsEl?.addEventListener("click", (e) => {
+    const actionBtn = e.target.closest("button[data-action][data-item-id]");
+    if (actionBtn) {
+      const action = actionBtn.dataset.action;
+      const itemId = actionBtn.dataset.itemId;
+      const day = getActiveDay();
+      if (!day) return;
+      const idx = day.items.findIndex((it) => it.id === itemId);
+      if (idx < 0) return;
+
+      if (action === "itemRemove") {
+        commitPlanner({
+          ...planner,
+          days: planner.days.map((d) =>
+            d.id === day.id ? { ...d, items: d.items.filter((it) => it.id !== itemId) } : d,
+          ),
+        });
+        sync({ keepView: true });
+        renderPlanner();
+        showToast("Removed");
+        return;
+      }
+
+      if (action === "itemUp" && idx > 0) {
+        const items = [...day.items];
+        const tmp = items[idx - 1];
+        items[idx - 1] = items[idx];
+        items[idx] = tmp;
+        commitPlanner({
+          ...planner,
+          days: planner.days.map((d) => (d.id === day.id ? { ...d, items } : d)),
+        });
+        sync({ keepView: true });
+        renderPlanner();
+        return;
+      }
+
+      if (action === "itemDown" && idx < day.items.length - 1) {
+        const items = [...day.items];
+        const tmp = items[idx + 1];
+        items[idx + 1] = items[idx];
+        items[idx] = tmp;
+        commitPlanner({
+          ...planner,
+          days: planner.days.map((d) => (d.id === day.id ? { ...d, items } : d)),
+        });
+        sync({ keepView: true });
+        renderPlanner();
+        return;
+      }
+      return;
+    }
+
+    const goPlacesBtn = e.target.closest("button[data-action='goPlaces']");
+    if (goPlacesBtn) {
+      setView("places");
+      return;
+    }
+
+    const card = e.target.closest("[data-item-id][data-place-id]");
+    if (!card) return;
+    const placeId = card.dataset.placeId;
+    const place = placeById.get(placeId);
+    if (!place) return;
+    state.selectedId = placeId;
+    syncSelection();
+  });
+
+  plannerItemsEl?.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const card = e.target.closest("[data-item-id][data-place-id]");
+    if (!card) return;
+    e.preventDefault();
+    const placeId = card.dataset.placeId;
+    const place = placeById.get(placeId);
+    if (!place) return;
+    state.selectedId = placeId;
+    syncSelection();
+  });
+
+  btnDayClear?.addEventListener("click", () => {
+    const day = getActiveDay();
+    if (!day) return;
+    if (!day.items.length) return;
+    if (!confirm(`Clear all stops in ${day.title}?`)) return;
+    commitPlanner({
+      ...planner,
+      days: planner.days.map((d) => (d.id === day.id ? { ...d, items: [] } : d)),
+    });
+    sync({ keepView: true });
+    renderPlanner();
+    showToast("Cleared");
+  });
+
+  btnPlanExport?.addEventListener("click", () => {
+    const payload = {
+      ...planner,
+      exportedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "trip-planner.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast("Exported");
+  });
+
+  planImportEl?.addEventListener("change", async () => {
+    const file = planImportEl.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      commitPlanner(parsed);
+      sync({ keepView: true });
+      setView("planner");
+      renderPlanner();
+      showToast("Imported");
+    } catch {
+      showToast("Import failed");
+    } finally {
+      planImportEl.value = "";
+    }
+  });
+
+  btnPlanFit?.addEventListener("click", () => {
+    const day = getActiveDay();
+    if (!day) return;
+    const pts = day.items
+      .map((it) => placeById.get(it.placeId))
+      .filter((p) => p && hasCoords(p))
+      .map((p) => [p.lat, p.lon]);
+    if (!pts.length) {
+      showToast("No pins in this day");
+      return;
+    }
+    const bounds = L.latLngBounds(pts);
+    if (bounds.isValid() && bounds.getNorthEast().equals(bounds.getSouthWest())) {
+      map.setView(bounds.getCenter(), 15, { animate: true });
+      showToast("Fit day");
+      return;
+    }
+    const base = 24;
+    const options = { animate: true };
+    if (sheet?.isEnabled?.()) {
+      const size = map.getSize();
+      let safeBottom = sheet.getSafeBottomPxRelativeToMap();
+      if (safeBottom < 140) safeBottom = size.y;
+      const covered = Math.max(0, size.y - safeBottom);
+      options.paddingTopLeft = [base, base];
+      options.paddingBottomRight = [base, base + covered];
+    } else {
+      options.padding = [base, base];
+    }
+    map.fitBounds(bounds.pad(0.18), options);
+    showToast("Fit day");
+  });
+
+  const buildDirectionsUrl = ({ origin, destination, waypoints = [] }) => {
+    const url = new URL("https://www.google.com/maps/dir/");
+    url.searchParams.set("api", "1");
+    if (origin) url.searchParams.set("origin", origin);
+    if (destination) url.searchParams.set("destination", destination);
+    if (waypoints.length) url.searchParams.set("waypoints", waypoints.join("|"));
+    url.searchParams.set("travelmode", "walking");
+    return url.toString();
+  };
+
+  btnPlanRoute?.addEventListener("click", () => {
+    const day = getActiveDay();
+    if (!day) return;
+    const stops = day.items
+      .map((it) => placeById.get(it.placeId))
+      .filter(Boolean)
+      .map((p) => (hasCoords(p) ? `${p.lat},${p.lon}` : p.address || p.name || ""))
+      .map((s) => String(s).trim())
+      .filter(Boolean);
+
+    if (!stops.length) {
+      showToast("Add places to plan a route");
+      return;
+    }
+
+    if (stops.length === 1) {
+      window.open(
+        buildDirectionsUrl({ destination: stops[0] }),
+        "_blank",
+        "noopener,noreferrer",
+      );
+      return;
+    }
+
+    const maxStops = 5; // origin + up to 3 waypoints + destination (mobile-friendly)
+    if (stops.length <= maxStops) {
+      const url = buildDirectionsUrl({
+        origin: stops[0],
+        destination: stops[stops.length - 1],
+        waypoints: stops.slice(1, -1),
+      });
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+
+    const segments = [];
+    for (let i = 0; i < stops.length; i += 1) {
+      const slice = stops.slice(i, i + maxStops);
+      if (slice.length >= 2) segments.push(slice);
+      if (i + maxStops >= stops.length) break;
+      i += maxStops - 2; // overlap 1 stop (next origin)
+    }
+
+    const ok = confirm(
+      `This day has ${stops.length} stops.\nGoogle Maps mobile supports up to 3 waypoints per route.\nOpen ${segments.length} route tabs?`,
+    );
+    const toOpen = ok ? segments : [segments[0]];
+
+    let blocked = false;
+    for (const seg of toOpen) {
+      const url = buildDirectionsUrl({
+        origin: seg[0],
+        destination: seg[seg.length - 1],
+        waypoints: seg.slice(1, -1),
+      });
+      const w = window.open(url, "_blank", "noopener,noreferrer");
+      if (!w) blocked = true;
+    }
+    if (blocked) showToast("Popup blocked — allow popups to open all segments");
+  });
+
+  setView(viewId, { persist: false });
 
   const myLocationPane = map.createPane("mylocation");
   myLocationPane.style.zIndex = "650";
@@ -1119,4 +1953,6 @@ async function main() {
   showToast("Loaded");
 }
 
+registerInstallPrompt();
+registerServiceWorker();
 main();
