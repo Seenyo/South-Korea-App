@@ -585,30 +585,139 @@ async function main() {
     showToast("Fit to pins");
   });
 
-  btnLocate.addEventListener("click", () => {
+  const myLocationPane = map.createPane("mylocation");
+  myLocationPane.style.zIndex = "650";
+
+  const myLocation = {
+    watchId: null,
+    marker: null,
+    accuracyCircle: null,
+    didInitialCenter: false,
+  };
+
+  const setLocateUi = (active) => {
+    btnLocate.dataset.active = active ? "true" : "false";
+    btnLocate.textContent = active ? "Tracking" : "Locate";
+    btnLocate.title = active ? "Stop tracking your location" : "Show your current location";
+  };
+
+  const myLocationIcon = L.divIcon({
+    className: "",
+    html: '<div class="my-loc"><div class="my-loc__pulse"></div><div class="my-loc__dot"></div></div>',
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+    popupAnchor: [0, -10],
+  });
+
+  const ensureMyLocationLayers = ([lat, lon], accuracyM) => {
+    if (!myLocation.marker) {
+      myLocation.marker = L.marker([lat, lon], {
+        icon: myLocationIcon,
+        pane: "mylocation",
+      }).addTo(map);
+    }
+
+    if (!myLocation.accuracyCircle) {
+      myLocation.accuracyCircle = L.circle([lat, lon], {
+        radius: Math.max(accuracyM || 0, 10),
+        color: "#22d3ee",
+        weight: 1,
+        opacity: 0.65,
+        fillColor: "#22d3ee",
+        fillOpacity: 0.08,
+        interactive: false,
+      }).addTo(map);
+    }
+  };
+
+  const updateMyLocation = (pos) => {
+    const lat = pos.coords.latitude;
+    const lon = pos.coords.longitude;
+    const accuracyM = pos.coords.accuracy;
+
+    ensureMyLocationLayers([lat, lon], accuracyM);
+
+    myLocation.marker.setLatLng([lat, lon]);
+    myLocation.accuracyCircle.setLatLng([lat, lon]);
+    if (typeof accuracyM === "number" && Number.isFinite(accuracyM)) {
+      myLocation.accuracyCircle.setRadius(Math.max(accuracyM, 10));
+    }
+
+    const accText =
+      typeof accuracyM === "number" && Number.isFinite(accuracyM)
+        ? `Accuracy ~${Math.round(accuracyM)}m`
+        : "Accuracy unknown";
+    const popupHtml = `
+      <div class="min-w-[200px]">
+        <div class="text-sm font-extrabold tracking-tight">My Location</div>
+        <div class="mt-1 text-xs text-slate-300">${accText}</div>
+      </div>
+    `;
+    const popup = myLocation.marker.getPopup();
+    if (popup) popup.setContent(popupHtml);
+    else myLocation.marker.bindPopup(popupHtml);
+
+    if (!myLocation.didInitialCenter) {
+      myLocation.didInitialCenter = true;
+      map.flyTo([lat, lon], Math.max(map.getZoom(), 15), { duration: 0.7 });
+      myLocation.marker.openPopup();
+    }
+  };
+
+  const stopTracking = () => {
+    if (myLocation.watchId != null) {
+      navigator.geolocation.clearWatch(myLocation.watchId);
+      myLocation.watchId = null;
+    }
+    myLocation.didInitialCenter = false;
+    if (myLocation.marker) {
+      myLocation.marker.remove();
+      myLocation.marker = null;
+    }
+    if (myLocation.accuracyCircle) {
+      myLocation.accuracyCircle.remove();
+      myLocation.accuracyCircle = null;
+    }
+    setLocateUi(false);
+  };
+
+  const startTracking = () => {
     if (!navigator.geolocation) {
       showToast("Geolocation not supported");
       return;
     }
-    navigator.geolocation.getCurrentPosition(
+    if (myLocation.watchId != null) return;
+
+    setLocateUi(true);
+    showToast("Locating…");
+    myLocation.watchId = navigator.geolocation.watchPosition(
       (pos) => {
-        const lat = pos.coords.latitude;
-        const lon = pos.coords.longitude;
-        const here = L.circleMarker([lat, lon], {
-          radius: 7,
-          weight: 2,
-          color: "#22d3ee",
-          fillColor: "#22d3ee",
-          fillOpacity: 0.25,
-        }).addTo(map);
-        here.bindPopup("You are here").openPopup();
-        map.flyTo([lat, lon], 14, { duration: 0.7 });
-        window.setTimeout(() => here.remove(), 30_000);
-        showToast("Located");
+        updateMyLocation(pos);
+        showToast("Location updated", { durationMs: 900 });
       },
-      () => showToast("Location blocked"),
-      { enableHighAccuracy: true, timeout: 10_000 },
+      (err) => {
+        stopTracking();
+        const msg =
+          err?.code === 1
+            ? "Location blocked"
+            : err?.code === 2
+              ? "Location unavailable"
+              : err?.code === 3
+                ? "Location timeout"
+                : "Location error";
+        showToast(msg);
+      },
+      { enableHighAccuracy: true, maximumAge: 10_000, timeout: 12_000 },
     );
+  };
+
+  btnLocate.addEventListener("click", () => {
+    if (myLocation.watchId != null) {
+      stopTracking();
+      showToast("Location off");
+      return;
+    }
+    startTracking();
   });
 
   sync();
