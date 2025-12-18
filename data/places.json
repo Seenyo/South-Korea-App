@@ -1,0 +1,368 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2025-12-17T13:07:31.024Z",
+  "stats": {
+    "total": 18,
+    "pinned": 18
+  },
+  "places": [
+    {
+      "id": "p_d34f7062",
+      "name": "Hotel",
+      "category": "Hotel",
+      "notes": [],
+      "address": "12 Myeongdong 3-gil, Jung-gu 4-5FL, 04534 ソウル, 韓国",
+      "url": "",
+      "source": "hotel.txt",
+      "lat": 37.5648175,
+      "lon": 126.9834889,
+      "geocoding": {
+        "provider": "nominatim",
+        "precision": "search",
+        "displayName": "명동3길, 명동1가, 명동, 중구, 서울특별시, 04534, 대한민국",
+        "query": "12 Myeongdong 3-gil, Jung-gu , 04534 ,"
+      },
+      "naver": null
+    },
+    {
+      "id": "p_33964313",
+      "name": "トサン精肉清潭本店",
+      "category": "焼肉(サムギョプサル)",
+      "notes": [],
+      "address": "ソウル特別市 江南区 新沙洞 657-1",
+      "url": "https://naver.me/FjCdD7I0",
+      "source": "list.md",
+      "lat": 37.525474,
+      "lon": 127.0388523,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "1254940478",
+        "name": "도산정육 청담본점",
+        "sourceUrl": "https://naver.me/FjCdD7I0"
+      }
+    },
+    {
+      "id": "p_587ce578",
+      "name": "ジェジュ屋上ブラックBBQ",
+      "category": "焼肉(サムギョプサル)",
+      "notes": [],
+      "address": "ソウル特別市 江南区 新沙洞 642-13",
+      "url": "https://naver.me/FgT0LGcW",
+      "source": "list.md",
+      "lat": 37.5264873,
+      "lon": 127.0364514,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "1890747832",
+        "name": "제주옥탑 블랙BBQ",
+        "sourceUrl": "https://naver.me/FgT0LGcW"
+      }
+    },
+    {
+      "id": "p_1a2426f2",
+      "name": "クプダン聖寿店",
+      "category": "焼肉(サムギョプサル)",
+      "notes": [
+        "※新沙と蚕室方面にも店舗あり"
+      ],
+      "address": "ソウル特別市 城東区 聖水洞二街 273-24",
+      "url": "https://naver.me/G8hzNPlI",
+      "source": "list.md",
+      "lat": 37.5432305,
+      "lon": 127.0575635,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "1739440199",
+        "name": "꿉당 성수점",
+        "sourceUrl": "https://naver.me/G8hzNPlI"
+      }
+    },
+    {
+      "id": "p_c459faf2",
+      "name": "ウデポ明洞店",
+      "category": "焼肉(サムギョプサル)",
+      "notes": [],
+      "address": "ソウル特別市 中区 忠武路二街 66-5",
+      "url": "https://naver.me/xAAndMeW",
+      "source": "list.md",
+      "lat": 37.5620488,
+      "lon": 126.9856453,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "1795582818",
+        "name": "우대포 명동점",
+        "sourceUrl": "https://naver.me/xAAndMeW"
+      }
+    },
+    {
+      "id": "p_1709e4b5",
+      "name": "ウデポブラック明洞店",
+      "category": "焼肉(サムギョプサル)",
+      "notes": [],
+      "address": "ソウル特別市 中区 明洞一街 47-1",
+      "url": "https://naver.me/FE3MmptR",
+      "source": "list.md",
+      "lat": 37.564299,
+      "lon": 126.9844936,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "1704043572",
+        "name": "우대포 블랙명동점",
+        "sourceUrl": "https://naver.me/FE3MmptR"
+      }
+    },
+    {
+      "id": "p_abe541f6",
+      "name": "トゥコプサム明洞直営店",
+      "category": "焼肉(サムギョプサル)",
+      "notes": [],
+      "address": "ソウル特別市 中区 忠武路二街 11-1",
+      "url": "https://naver.me/GDLiV2BD",
+      "source": "list.md",
+      "lat": 37.5619286,
+      "lon": 126.9865663,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "1235482141",
+        "name": "두껍삼 명동직영점",
+        "sourceUrl": "https://naver.me/GDLiV2BD"
+      }
+    },
+    {
+      "id": "p_fb93e111",
+      "name": "ヨンチョンヨンファ清潭店",
+      "category": "焼肉(韓牛)",
+      "notes": [],
+      "address": "ソウル特別市 江南区 清潭洞 50-13",
+      "url": "https://naver.me/5dAGXoxH",
+      "source": "list.md",
+      "lat": 37.5239502,
+      "lon": 127.0495268,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "13124988",
+        "name": "영천영화 청담점",
+        "sourceUrl": "https://naver.me/5dAGXoxH"
+      }
+    },
+    {
+      "id": "p_1e09ef33",
+      "name": "イルピョンロース明洞店",
+      "category": "焼肉(韓牛)",
+      "notes": [
+        "*弘大にも店舗あり"
+      ],
+      "address": "ソウル特別市 中区 明洞二街 32-17",
+      "url": "https://naver.me/FSSdUdPt",
+      "source": "list.md",
+      "lat": 37.5629334,
+      "lon": 126.9852986,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "1088892711",
+        "name": "일편등심 명동점",
+        "sourceUrl": "https://naver.me/FSSdUdPt"
+      }
+    },
+    {
+      "id": "p_cb19dfde",
+      "name": "スケジュル聖寿",
+      "category": "イタリアン/洋食",
+      "notes": [],
+      "address": "ソウル特別市 城東区 聖水洞二街 315-71",
+      "url": "https://naver.me/GF",
+      "source": "list.md",
+      "lat": 37.54048,
+      "lon": 127.05601,
+      "geocoding": {
+        "provider": "nominatim",
+        "precision": "search",
+        "displayName": "성수동2가, 성수2가1동, 성동구, 서울특별시, 04781, 대한민국",
+        "query": "ソウル特別市 城東区 聖水洞二街 315-71"
+      },
+      "naver": null
+    },
+    {
+      "id": "p_742f0faf",
+      "name": "聖水タラク",
+      "category": "イタリアン/洋食",
+      "notes": [
+        "*狎鴎亭ロデオにも店舗あり"
+      ],
+      "address": "ソウル特別市 城東区 聖水洞二街 328-15",
+      "url": "https://naver.me/5lf1Hvsn",
+      "source": "list.md",
+      "lat": 37.5398955,
+      "lon": 127.0562588,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "1241532707",
+        "name": "성수다락",
+        "sourceUrl": "https://naver.me/5lf1Hvsn"
+      }
+    },
+    {
+      "id": "p_caece880",
+      "name": "江南麺屋明洞店",
+      "category": "冷麺",
+      "notes": [],
+      "address": "ソウル特別市 中区 明洞一街 48-2",
+      "url": "https://naver.me/5b0eotVt",
+      "source": "list.md",
+      "lat": 37.5642182,
+      "lon": 126.9845039,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "35489787",
+        "name": "강남면옥 명동점",
+        "sourceUrl": "https://naver.me/5b0eotVt"
+      }
+    },
+    {
+      "id": "p_076e2981",
+      "name": "シン舎コッゲダン狎鴎亭ロデオ店",
+      "category": "カンジャンケジャン",
+      "notes": [
+        "*新沙にも店舗あり"
+      ],
+      "address": "ソウル特別市 江南区 新沙洞 648-12",
+      "url": "https://naver.me/xKt1oTuh",
+      "source": "list.md",
+      "lat": 37.5237444,
+      "lon": 127.036967,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "1110178448",
+        "name": "신사꽃게당 압구정로데오점",
+        "sourceUrl": "https://naver.me/xKt1oTuh"
+      }
+    },
+    {
+      "id": "p_17423c8f",
+      "name": "プロカンジャンケジャンシン舎本店",
+      "category": "カンジャンケジャン",
+      "notes": [],
+      "address": "ソウル特別市 瑞草区 蚕院洞 27-1",
+      "url": "https://naver.me/55PZJAeC",
+      "source": "list.md",
+      "lat": 37.5145841,
+      "lon": 127.0191958,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "11534185",
+        "name": "프로간장게장 신사본점",
+        "sourceUrl": "https://naver.me/55PZJAeC"
+      }
+    },
+    {
+      "id": "p_35fc680a",
+      "name": "シンソンソルロンタン明洞店",
+      "category": "ソルロンタン",
+      "notes": [],
+      "address": "ソウル特別市 中区 明洞二街 2-23",
+      "url": "https://naver.me/GHYpKJ1J",
+      "source": "list.md",
+      "lat": 37.5637745,
+      "lon": 126.9854376,
+      "geocoding": {
+        "provider": "naver",
+        "precision": "place"
+      },
+      "naver": {
+        "placeId": "1486235961",
+        "name": "신선설농탕 명동점",
+        "sourceUrl": "https://naver.me/GHYpKJ1J"
+      }
+    },
+    {
+      "id": "p_14f0ea8e",
+      "name": "60鶏チキン",
+      "category": "チキン",
+      "notes": [],
+      "address": "",
+      "url": "",
+      "source": "list.md",
+      "lat": 37.6014919,
+      "lon": 127.0875421,
+      "geocoding": {
+        "provider": "nominatim",
+        "precision": "search",
+        "displayName": "60계치킨, 48, 상봉중앙로, 상봉동, 상봉1동, 중랑구, 서울특별시, 02098, 대한민국",
+        "query": "60계치킨"
+      },
+      "naver": null
+    },
+    {
+      "id": "p_890b1f89",
+      "name": "カンブチキン",
+      "category": "チキン",
+      "notes": [],
+      "address": "",
+      "url": "",
+      "source": "list.md",
+      "lat": 37.5615781,
+      "lon": 126.9862271,
+      "geocoding": {
+        "provider": "nominatim",
+        "precision": "search",
+        "displayName": "깐부치킨 명동점, 22, 명동8가길, 명동2가, 명동, 중구, 서울특별시, 04537, 대한민국",
+        "query": "깐부치킨 명동점"
+      },
+      "naver": null
+    },
+    {
+      "id": "p_a5c5c97e",
+      "name": "キョチョンチキン",
+      "category": "チキン",
+      "notes": [],
+      "address": "",
+      "url": "",
+      "source": "list.md",
+      "lat": 37.553607,
+      "lon": 126.9201239,
+      "geocoding": {
+        "provider": "nominatim",
+        "precision": "search",
+        "displayName": "교촌치킨, 6, 양화로16길, 홍대, 서교동, 마포구, 서울특별시, 04039, 대한민국",
+        "query": "キョチョンチキン"
+      },
+      "naver": null
+    }
+  ]
+}
