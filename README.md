@@ -33,6 +33,11 @@ GitHub Pages is static, so cross-device sync needs a backend. This app can sync:
 2) Supabase Dashboard → **SQL Editor** → run `supabase_setup.sql`
 
 If you see `Supabase policy blocked sync`, re-run `supabase_setup.sql` (policies updated).
+You can also confirm the helper exists:
+
+```sql
+select to_regproc('public.request_uid') as request_uid_fn;
+```
 
 ### 2) Use it
 

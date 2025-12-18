@@ -13,6 +13,19 @@ begin
 end;
 $$;
 
+-- Extract user id from the request JWT in a PostgREST/Supabase-safe way.
+-- (Some environments set `request.jwt.claim.sub`, others only `request.jwt.claims` JSON.)
+create or replace function public.request_uid()
+returns uuid
+language sql
+stable
+as $$
+  select coalesce(
+    nullif(current_setting('request.jwt.claim.sub', true), '')::uuid,
+    (current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::uuid
+  );
+$$;
+
 create table if not exists public.trips (
   id uuid primary key default gen_random_uuid(),
   join_code text not null,
@@ -53,7 +66,7 @@ drop policy if exists "members_select_self" on public.trip_members;
 create policy "trips_insert_authenticated"
 on public.trips
 for insert
-with check (auth.uid() is not null);
+with check (public.request_uid() is not null);
 
 -- Trips: only members can read.
 create policy "trips_select_members"
@@ -64,7 +77,7 @@ using (
     select 1
     from public.trip_members m
     where m.trip_id = trips.id
-      and m.user_id = auth.uid()
+      and m.user_id = public.request_uid()
   )
 );
 
@@ -77,7 +90,7 @@ using (
     select 1
     from public.trip_members m
     where m.trip_id = trips.id
-      and m.user_id = auth.uid()
+      and m.user_id = public.request_uid()
   )
 )
 with check (
@@ -85,7 +98,7 @@ with check (
     select 1
     from public.trip_members m
     where m.trip_id = trips.id
-      and m.user_id = auth.uid()
+      and m.user_id = public.request_uid()
   )
 );
 
@@ -94,13 +107,13 @@ create policy "members_insert_with_code"
 on public.trip_members
 for insert
 with check (
-  auth.uid() is not null
-  and auth.uid() = user_id
+  public.request_uid() is not null
+  and public.request_uid() = user_id
   and exists (
     select 1
     from public.trips t
-    where t.id = trip_id
-      and t.join_code = join_code
+    where t.id = trip_members.trip_id
+      and t.join_code = trip_members.join_code
   )
 );
 
@@ -108,7 +121,7 @@ with check (
 create policy "members_select_self"
 on public.trip_members
 for select
-using (user_id = auth.uid());
+using (user_id = public.request_uid());
 
 -- Realtime (Postgres changes) for trips table
 do $$
