@@ -1,0 +1,31 @@
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env
+.env
+.env.*
+
+# Common build outputs (future-proof)
+dist/
+build/
+.next/
+out/
+.cache/
+.vite/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Generated data (recreate via `node scripts/generate-places.mjs`)
+data/places.json
+

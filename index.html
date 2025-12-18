@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trip Map</title>
+    <meta name="description" content="Interactive trip map generated from list.md and hotel.txt" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"
+    />
+
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        height: 100%;
+        font-family:
+          Inter,
+          "Noto Sans JP",
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          Roboto,
+          Helvetica,
+          Arial,
+          "Apple Color Emoji",
+          "Segoe UI Emoji";
+      }
+
+      .leaflet-container {
+        background: #0b1020;
+      }
+      .leaflet-control-attribution {
+        background: rgba(2, 6, 23, 0.6) !important;
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 999px;
+        margin: 10px !important;
+        padding: 4px 10px !important;
+        color: rgba(226, 232, 240, 0.8) !important;
+      }
+      .leaflet-control-attribution a {
+        color: rgba(226, 232, 240, 0.9) !important;
+        text-decoration: none;
+      }
+
+      .leaflet-popup-content-wrapper,
+      .leaflet-popup-tip {
+        background: rgba(2, 6, 23, 0.92) !important;
+        color: rgba(226, 232, 240, 0.95) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(14px);
+      }
+      .leaflet-popup-content {
+        margin: 14px 16px !important;
+      }
+
+      .pin {
+        width: 34px;
+        height: 34px;
+        transform: translate(-50%, -100%);
+        filter: drop-shadow(0 10px 20px rgba(0, 0, 0, 0.55));
+      }
+      .pin__bubble {
+        width: 34px;
+        height: 34px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow:
+          inset 0 0 0 1px rgba(0, 0, 0, 0.25),
+          0 12px 30px rgba(0, 0, 0, 0.35);
+      }
+      .pin__dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.85);
+        box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.16);
+      }
+      .pin--selected .pin__bubble {
+        box-shadow:
+          0 0 0 10px rgba(236, 72, 153, 0.16),
+          0 0 0 2px rgba(236, 72, 153, 0.35),
+          0 20px 40px rgba(0, 0, 0, 0.55);
+      }
+
+      .cluster {
+        width: 42px;
+        height: 42px;
+        transform: translate(-50%, -50%);
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: rgba(255, 255, 255, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        box-shadow:
+          inset 0 0 0 1px rgba(0, 0, 0, 0.3),
+          0 18px 40px rgba(0, 0, 0, 0.45);
+        backdrop-filter: blur(10px);
+      }
+    </style>
+
+    <style type="text/tailwindcss">
+      @layer base {
+        :root {
+          --bg-a: 2 6 23; /* slate-950 */
+        }
+      }
+    </style>
+  </head>
+
+  <body class="bg-slate-950 text-slate-50">
+    <div class="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+      <div
+        class="absolute -left-32 -top-36 h-[420px] w-[420px] rounded-full bg-fuchsia-500/25 blur-3xl"
+      ></div>
+      <div
+        class="absolute -right-32 top-16 h-[520px] w-[520px] rounded-full bg-cyan-400/18 blur-3xl"
+      ></div>
+      <div
+        class="absolute left-1/3 top-2/3 h-[520px] w-[520px] rounded-full bg-rose-500/16 blur-3xl"
+      ></div>
+      <div class="absolute inset-0 bg-[radial-gradient(circle_at_top,#0b1020,transparent_60%)]"></div>
+    </div>
+
+    <div class="h-dvh w-full overflow-hidden">
+      <div class="flex h-full w-full flex-col md:flex-row">
+        <aside
+          class="h-[46dvh] w-full shrink-0 overflow-hidden md:h-full md:w-[420px] md:border-r md:border-white/10"
+        >
+          <div class="flex h-full flex-col bg-slate-950/60 backdrop-blur-xl">
+            <div class="border-b border-white/10 px-4 py-4">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <div class="text-lg font-extrabold tracking-tight md:text-xl">Trip Map</div>
+                  <div class="text-xs text-slate-300">
+                    `list.md` / `hotel.txt` → pins (Seoul)
+                  </div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button
+                    id="btnFit"
+                    class="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15 active:scale-[0.99]"
+                    type="button"
+                    title="全ピンが見えるように移動"
+                  >
+                    Fit
+                  </button>
+                  <button
+                    id="btnLocate"
+                    class="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15 active:scale-[0.99]"
+                    type="button"
+                    title="現在地を表示"
+                  >
+                    Locate
+                  </button>
+                </div>
+              </div>
+
+              <div class="mt-3 flex items-center gap-2">
+                <label class="flex-1">
+                  <span class="sr-only">Search</span>
+                  <input
+                    id="search"
+                    type="search"
+                    placeholder="Search (name / area)…"
+                    class="w-full rounded-2xl bg-white/5 px-4 py-2.5 text-sm text-white placeholder:text-slate-400 ring-1 ring-white/10 outline-none transition focus:ring-2 focus:ring-fuchsia-400/60"
+                  />
+                </label>
+                <button
+                  id="btnClearSearch"
+                  type="button"
+                  class="rounded-2xl bg-white/5 px-3 py-2.5 text-sm text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+                  title="検索をクリア"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div class="mt-3 flex flex-wrap gap-2" id="categoryChips"></div>
+              <div class="mt-3 text-xs text-slate-300" id="stats"></div>
+            </div>
+
+            <div class="min-h-0 flex-1 overflow-auto">
+              <div class="p-2" id="placeList"></div>
+            </div>
+
+            <div class="border-t border-white/10 px-4 py-3 text-[11px] text-slate-400">
+              データ更新: <span class="font-mono">node scripts/generate-places.mjs</span>
+            </div>
+          </div>
+        </aside>
+
+        <main class="relative min-h-0 flex-1">
+          <div id="map" class="h-full w-full"></div>
+
+          <div class="pointer-events-none absolute inset-0">
+            <div class="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-slate-950/70 to-transparent">
+            </div>
+            <div
+              class="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-slate-950/70 to-transparent"
+            ></div>
+          </div>
+
+          <div class="pointer-events-none absolute left-1/2 top-4 z-[1100] -translate-x-1/2">
+            <div
+              id="toast"
+              class="pointer-events-auto hidden rounded-full bg-black/50 px-4 py-2 text-xs font-semibold text-slate-100 ring-1 ring-white/10 backdrop-blur-xl"
+            ></div>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
+
