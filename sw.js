@@ -26,6 +26,9 @@ const isTileRequest = (url) =>
 
 const isSupabaseRequest = (url) => url.hostname.endsWith(".supabase.co");
 
+const isGoogleMapsRequest = (url) =>
+  url.hostname === "www.google.com" && (url.pathname.startsWith("/maps") || url.pathname.startsWith("/maps/"));
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
@@ -107,6 +110,9 @@ self.addEventListener("fetch", (event) => {
 
   // Supabase is dynamic API data: never cache (prevents stale sync).
   if (isSupabaseRequest(url)) return;
+
+  // Google Maps embeds are dynamic/heavy: never cache.
+  if (isGoogleMapsRequest(url)) return;
 
   // Other cross-origin (fonts, CDN JS/CSS): cache-first.
   event.respondWith(cacheFirst(request, RUNTIME_CACHE));

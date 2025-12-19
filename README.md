@@ -60,7 +60,15 @@ select to_regproc('public.request_uid') as request_uid_fn;
 - Tap **＋** on a place to add it to the active day
 - Tap a stop to edit **Start/End time** + **Memo**
 - Stops are automatically sorted by time; remove with **✕**
+- Tap **Directions** to view in-app Google directions (leg-by-leg)
 - Use **Export/Import** to back up / restore your plan
+
+## Directions (Google, in-app)
+
+- Places list: tap **↗** to open directions to that place (from **My location** or **Day start**)
+- Pin popup: tap **Directions** (stays inside this app)
+- Optional: Place → **Google** tab → paste a Google Maps URL to store coordinates/Place ID (shared with the trip)
+- Travel mode (Walk/Drive/Transit) is saved per-device (not shared)
 
 ## Update pins
 

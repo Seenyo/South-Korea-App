@@ -11,6 +11,7 @@ const SYNC_SETTINGS_KEY = "sc_trip_sync_v1";
 const CLIENT_ID_KEY = "sc_trip_client_id_v1";
 const LAST_USER_KEY = "sc_trip_last_user_v1";
 const ONBOARDING_SEEN_KEY = "sc_trip_onboarding_seen_v1";
+const GMAPS_MODE_KEY = "sc_trip_gmaps_mode_v1";
 
 function uid(prefix) {
   const p = prefix ? `${prefix}_` : "";
@@ -129,6 +130,24 @@ function loadThemeId() {
 function saveThemeId(themeId) {
   try {
     localStorage.setItem(THEME_KEY, String(themeId));
+  } catch {
+    // ignore
+  }
+}
+
+function loadGmapsMode() {
+  try {
+    const raw = localStorage.getItem(GMAPS_MODE_KEY);
+    return raw === "driving" || raw === "transit" || raw === "walking" ? raw : "walking";
+  } catch {
+    return "walking";
+  }
+}
+
+function saveGmapsMode(mode) {
+  const next = mode === "driving" || mode === "transit" || mode === "walking" ? mode : "walking";
+  try {
+    localStorage.setItem(GMAPS_MODE_KEY, next);
   } catch {
     // ignore
   }
@@ -498,6 +517,82 @@ function buildNaverEntryUrl(place) {
   return `https://map.naver.com/p/entry/place/${placeId}`;
 }
 
+function extractGooglePlaceIdFromUrl(urlLike) {
+  try {
+    const u = new URL(String(urlLike), "https://example.invalid");
+    const params = u.searchParams;
+    const candidates = [
+      params.get("query_place_id"),
+      params.get("place_id"),
+      params.get("origin_place_id"),
+      params.get("destination_place_id"),
+      params.get("waypoint_place_ids"),
+    ]
+      .filter(Boolean)
+      .flatMap((v) => String(v).split("|"))
+      .map((v) => v.trim())
+      .filter(Boolean);
+
+    for (const c of candidates) {
+      // Place IDs are typically 20+ chars (e.g. ChIJ...), but keep it permissive.
+      if (/^[A-Za-z0-9_-]{12,}$/.test(c)) return c;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function extractLatLngFromGoogleMapsUrl(urlLike) {
+  try {
+    const u = new URL(String(urlLike), "https://example.invalid");
+
+    // Common: .../@lat,lon,17z/...
+    const m = u.href.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+    if (m) {
+      const lat = Number(m[1]);
+      const lon = Number(m[2]);
+      if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
+    }
+
+    // Also common: ?q=lat,lon
+    const q = (u.searchParams.get("q") || u.searchParams.get("query") || "").trim();
+    if (q) {
+      const qm = q.match(/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
+      if (qm) {
+        const lat = Number(qm[1]);
+        const lon = Number(qm[2]);
+        if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function gmapsModeToEmbedCode(mode) {
+  if (mode === "driving") return 0;
+  if (mode === "transit") return 3;
+  return 2; // walking (default)
+}
+
+function buildGoogleMapsEmbedDirectionsUrl({ origin, destination, mode }) {
+  const oLat = Number(origin?.lat);
+  const oLon = Number(origin?.lon);
+  const dLat = Number(destination?.lat);
+  const dLon = Number(destination?.lon);
+  if (![oLat, oLon, dLat, dLon].every((n) => Number.isFinite(n))) return null;
+
+  const m = gmapsModeToEmbedCode(mode);
+  const pb = `!1m10!4m9!3e${m}!4m3!3m2!1d${oLat}!2d${oLon}!4m3!3m2!1d${dLat}!2d${dLon}`;
+  const url = new URL("https://www.google.com/maps/embed");
+  url.searchParams.set("origin", "mfe");
+  url.searchParams.set("pb", pb);
+  return url.toString();
+}
+
 function formatCategoryLabel(category) {
   if (!category) return "Uncategorized";
   return category;
@@ -598,6 +693,7 @@ function buildPopupHtml(place) {
 
   const buttons = [
     `<button class="inline-flex items-center justify-center rounded-xl bg-fuchsia-500/20 px-3 py-2 text-xs font-extrabold text-white ring-1 ring-fuchsia-400/35 hover:bg-fuchsia-500/25" type="button" data-action="popupAdd" data-place-id="${escapeHtml(place.id)}">Add</button>`,
+    `<button class="inline-flex items-center justify-center rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 hover:bg-white/15" type="button" data-action="popupDirections" data-place-id="${escapeHtml(place.id)}">Directions</button>`,
     naverUrl
       ? `<a class="inline-flex items-center justify-center rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 hover:bg-white/15" target="_blank" rel="noreferrer" href="${naverUrl}">Naver</a>`
       : "",
@@ -761,6 +857,32 @@ function renderList({ places, selectedId, statusById, inPlannerPlaceIds }) {
       >＋</button>
     `;
 
+    const googleLat = statusById?.[place.id]?.google?.lat;
+    const googleLon = statusById?.[place.id]?.google?.lon;
+    const hasDirectionTarget =
+      pinned ||
+      (typeof googleLat === "number" &&
+        Number.isFinite(googleLat) &&
+        typeof googleLon === "number" &&
+        Number.isFinite(googleLon));
+
+    const directionsBtn = `
+      <button
+        type="button"
+        data-action="directions"
+        data-place-id="${escapeHtml(place.id)}"
+        ${hasDirectionTarget ? "" : "disabled"}
+        class="inline-flex items-center justify-center rounded-full px-2 py-1 text-[10px] font-extrabold ring-1 transition ${
+          hasDirectionTarget
+            ? "bg-white/5 text-slate-200 ring-white/10 hover:bg-white/10"
+            : "bg-white/5 text-slate-200/70 ring-white/10 opacity-40 cursor-not-allowed"
+        }"
+        title="${
+          hasDirectionTarget ? "Directions" : "Directions need pin coordinates (or a Google Maps URL)"
+        }"
+      >↗</button>
+    `;
+
     el.innerHTML = `
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
@@ -777,6 +899,7 @@ function renderList({ places, selectedId, statusById, inPlannerPlaceIds }) {
           <div class="mt-1 flex items-center gap-1">
             ${favoriteBtn}
             ${visitedBtn}
+            ${directionsBtn}
             ${addBtn}
           </div>
         </div>
@@ -876,6 +999,7 @@ async function main() {
   const placeById = new Map(allPlaces.map((p) => [p.id, p]));
   let statusById = loadStatus();
   let locSettings = loadLocSettings();
+  let gmapsMode = loadGmapsMode();
   let planner = loadPlanner();
   let viewId = loadViewId();
   let expandedPlannerItemId = null;
@@ -2881,12 +3005,23 @@ async function main() {
   };
 
   document.addEventListener("click", (e) => {
-    const btn = e.target.closest("button[data-action='popupAdd'][data-place-id]");
-    if (!btn) return;
-    const placeId = btn.dataset.placeId;
-    if (!placeId) return;
-    e.preventDefault();
-    addPlaceFlow(placeId, { closeMapPopup: true });
+    const addBtn = e.target.closest("button[data-action='popupAdd'][data-place-id]");
+    if (addBtn) {
+      const placeId = addBtn.dataset.placeId;
+      if (!placeId) return;
+      e.preventDefault();
+      addPlaceFlow(placeId, { closeMapPopup: true });
+      return;
+    }
+
+    const dirBtn = e.target.closest("button[data-action='popupDirections'][data-place-id]");
+    if (dirBtn) {
+      const placeId = dirBtn.dataset.placeId;
+      if (!placeId) return;
+      e.preventDefault();
+      map.closePopup();
+      openPlaceModal(placeId, { tab: "directions" });
+    }
   });
 
   const fitToPins = (animate = true) => {
@@ -3012,6 +3147,10 @@ async function main() {
       }
       if (placeId && action === "addToDay") {
         addPlaceFlow(placeId);
+        return;
+      }
+      if (placeId && action === "directions") {
+        openPlaceModal(placeId, { tab: "directions" });
         return;
       }
       return;
@@ -3552,76 +3691,7 @@ async function main() {
     showToast("Fit day");
   });
 
-  const buildDirectionsUrl = ({ origin, destination, waypoints = [] }) => {
-    const url = new URL("https://www.google.com/maps/dir/");
-    url.searchParams.set("api", "1");
-    if (origin) url.searchParams.set("origin", origin);
-    if (destination) url.searchParams.set("destination", destination);
-    if (waypoints.length) url.searchParams.set("waypoints", waypoints.join("|"));
-    url.searchParams.set("travelmode", "walking");
-    return url.toString();
-  };
-
-  btnPlanRoute?.addEventListener("click", () => {
-    const day = getActiveDay();
-    if (!day) return;
-    const stops = day.items
-      .map((it) => placeById.get(it.placeId))
-      .filter(Boolean)
-      .map((p) => (hasCoords(p) ? `${p.lat},${p.lon}` : p.address || p.name || ""))
-      .map((s) => String(s).trim())
-      .filter(Boolean);
-
-    if (!stops.length) {
-      showToast("Add places to plan a route");
-      return;
-    }
-
-    if (stops.length === 1) {
-      window.open(
-        buildDirectionsUrl({ destination: stops[0] }),
-        "_blank",
-        "noopener,noreferrer",
-      );
-      return;
-    }
-
-    const maxStops = 5; // origin + up to 3 waypoints + destination (mobile-friendly)
-    if (stops.length <= maxStops) {
-      const url = buildDirectionsUrl({
-        origin: stops[0],
-        destination: stops[stops.length - 1],
-        waypoints: stops.slice(1, -1),
-      });
-      window.open(url, "_blank", "noopener,noreferrer");
-      return;
-    }
-
-    const segments = [];
-    for (let i = 0; i < stops.length; i += 1) {
-      const slice = stops.slice(i, i + maxStops);
-      if (slice.length >= 2) segments.push(slice);
-      if (i + maxStops >= stops.length) break;
-      i += maxStops - 2; // overlap 1 stop (next origin)
-    }
-
-    const ok = confirm(
-      `This day has ${stops.length} stops.\nGoogle Maps mobile supports up to 3 waypoints per route.\nOpen ${segments.length} route tabs?`,
-    );
-    const toOpen = ok ? segments : [segments[0]];
-
-    let blocked = false;
-    for (const seg of toOpen) {
-      const url = buildDirectionsUrl({
-        origin: seg[0],
-        destination: seg[seg.length - 1],
-        waypoints: seg.slice(1, -1),
-      });
-      const w = window.open(url, "_blank", "noopener,noreferrer");
-      if (!w) blocked = true;
-    }
-    if (blocked) showToast("Popup blocked — allow popups to open all segments");
-  });
+  btnPlanRoute?.addEventListener("click", () => openDayDirectionsModal());
 
   setView(viewId, { persist: false });
 
@@ -3810,6 +3880,614 @@ async function main() {
       { enableHighAccuracy: true, maximumAge: 10_000, timeout: 12_000 },
     );
   };
+
+  const getPlaceGoogleMeta = (placeId) => {
+    const meta = statusById?.[placeId]?.google;
+    if (!meta || typeof meta !== "object") return { url: "", placeId: "", lat: null, lon: null };
+    const url = typeof meta.url === "string" ? meta.url : "";
+    const pid = typeof meta.placeId === "string" ? meta.placeId : "";
+    const lat = typeof meta.lat === "number" && Number.isFinite(meta.lat) ? meta.lat : null;
+    const lon = typeof meta.lon === "number" && Number.isFinite(meta.lon) ? meta.lon : null;
+    return { url, placeId: pid, lat, lon };
+  };
+
+  const setPlaceGoogleMeta = (placeId, nextMeta) => {
+    const current = statusById?.[placeId] || {};
+    const next = { ...current, google: nextMeta };
+    statusById = { ...statusById, [placeId]: next };
+    saveStatus(statusById);
+    markStatusDirty();
+  };
+
+  const resolvePlaceLatLon = (placeId) => {
+    const place = placeById.get(placeId);
+    if (place && hasCoords(place)) return { lat: place.lat, lon: place.lon, source: "pin" };
+    const meta = getPlaceGoogleMeta(placeId);
+    if (meta.lat != null && meta.lon != null) return { lat: meta.lat, lon: meta.lon, source: "google" };
+    const inferred = meta.url ? extractLatLngFromGoogleMapsUrl(meta.url) : null;
+    if (inferred) return { lat: inferred.lat, lon: inferred.lon, source: "google" };
+    return null;
+  };
+
+  const resolveDayStartLatLon = () => {
+    const day = getActiveDay();
+    for (const it of day?.items || []) {
+      if (!it?.placeId) continue;
+      const ll = resolvePlaceLatLon(it.placeId);
+      if (ll) return ll;
+    }
+    return null;
+  };
+
+  const openPlaceModal = (placeId, { tab = "directions" } = {}) =>
+    new Promise((resolve) => {
+      const place = placeById.get(placeId);
+      if (!place) return resolve();
+
+      const overlay = document.createElement("div");
+      overlay.className = "fixed inset-0 z-[4200] flex items-end md:items-center justify-center";
+
+      let activeTab = tab === "google" ? "google" : "directions";
+      let originMode = "my";
+
+      const myLatLng = myLocation.lastLatLng;
+      const dayStart = resolveDayStartLatLon();
+      if (!myLatLng && dayStart) originMode = "day";
+
+      let mode = gmapsMode;
+
+      const meta0 = getPlaceGoogleMeta(placeId);
+      let googleUrl = meta0.url;
+      let googlePlaceId = meta0.placeId;
+      let googleLat = meta0.lat;
+      let googleLon = meta0.lon;
+
+      const applyGoogleUrlDerived = (url) => {
+        const pid = extractGooglePlaceIdFromUrl(url);
+        if (pid) googlePlaceId = pid;
+        const ll = extractLatLngFromGoogleMapsUrl(url);
+        if (ll) {
+          googleLat = ll.lat;
+          googleLon = ll.lon;
+        }
+      };
+
+      const buildDirectionsSrc = () => {
+        const dest = resolvePlaceLatLon(placeId);
+        if (!dest) return { src: null, reason: "Destination has no coordinates" };
+
+        const origin =
+          originMode === "my"
+            ? myLocation.lastLatLng
+              ? { lat: myLocation.lastLatLng.lat, lon: myLocation.lastLatLng.lng }
+              : null
+            : originMode === "day"
+              ? dayStart
+                ? { lat: dayStart.lat, lon: dayStart.lon }
+                : null
+              : null;
+
+        if (!origin) return { src: null, reason: originMode === "my" ? "My location not available" : "Day start missing" };
+
+        const src = buildGoogleMapsEmbedDirectionsUrl({
+          origin,
+          destination: { lat: dest.lat, lon: dest.lon },
+          mode,
+        });
+        return src ? { src, reason: "" } : { src: null, reason: "Could not build directions" };
+      };
+
+      const render = () => {
+        const name = escapeHtml(place.name || "Untitled");
+        const address = escapeHtml(place.address || "");
+        const category = escapeHtml(formatCategoryLabel(place.category));
+        const dest = resolvePlaceLatLon(placeId);
+        const destNote = dest?.source === "google" ? "Using Google coordinates" : "";
+
+        const d = buildDirectionsSrc();
+        const hasMy = !!myLocation.lastLatLng;
+        const hasDay = !!dayStart;
+        const canDirections = !!d.src;
+
+        overlay.innerHTML = `
+          <div data-action="backdrop" class="absolute inset-0 bg-black/55 backdrop-blur-sm"></div>
+          <div class="relative w-full md:max-w-4xl md:rounded-3xl rounded-t-3xl border border-white/10 bg-slate-950/80 backdrop-blur-xl shadow-2xl">
+            <div class="border-b border-white/10 px-5 py-4">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="truncate text-base font-extrabold tracking-tight text-white">${name}</div>
+                  <div class="mt-1 truncate text-xs text-slate-300">${category}${address ? ` · ${address}` : ""}</div>
+                  ${destNote ? `<div class="mt-1 text-[11px] text-slate-400">${escapeHtml(destNote)}</div>` : ""}
+                </div>
+                <button
+                  type="button"
+                  data-action="close"
+                  class="shrink-0 rounded-full bg-white/5 px-4 py-2 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+                >Close</button>
+              </div>
+
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <div class="inline-flex rounded-full bg-white/5 p-1 ring-1 ring-white/10">
+                  <button
+                    type="button"
+                    data-action="tab"
+                    data-tab="directions"
+                    class="rounded-full px-3 py-1.5 text-xs font-extrabold transition ${
+                      activeTab === "directions" ? "bg-white/10 text-white" : "text-white/80 hover:text-white"
+                    }"
+                  >Directions</button>
+                  <button
+                    type="button"
+                    data-action="tab"
+                    data-tab="google"
+                    class="rounded-full px-3 py-1.5 text-xs font-extrabold transition ${
+                      activeTab === "google" ? "bg-white/10 text-white" : "text-white/80 hover:text-white"
+                    }"
+                  >Google</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="px-5 py-4">
+              ${
+                activeTab === "directions"
+                  ? `
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <div class="text-xs font-semibold text-slate-300">From</div>
+                        <div class="inline-flex rounded-full bg-white/5 p-1 ring-1 ring-white/10">
+                          <button
+                            type="button"
+                            data-action="origin"
+                            data-origin="my"
+                            ${hasMy ? "" : "disabled"}
+                            class="rounded-full px-3 py-1.5 text-xs font-extrabold transition ${
+                              originMode === "my" ? "bg-white/10 text-white" : "text-white/80 hover:text-white"
+                            } ${hasMy ? "" : "opacity-40 cursor-not-allowed"}"
+                          >My location</button>
+                          <button
+                            type="button"
+                            data-action="origin"
+                            data-origin="day"
+                            ${hasDay ? "" : "disabled"}
+                            class="rounded-full px-3 py-1.5 text-xs font-extrabold transition ${
+                              originMode === "day" ? "bg-white/10 text-white" : "text-white/80 hover:text-white"
+                            } ${hasDay ? "" : "opacity-40 cursor-not-allowed"}"
+                          >Day start</button>
+                        </div>
+                        ${
+                          !hasMy
+                            ? `<button type="button" data-action="getLocation" class="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15">Get location</button>`
+                            : ""
+                        }
+                      </div>
+
+                      <div class="flex flex-wrap items-center gap-2">
+                        <div class="text-xs font-semibold text-slate-300">Mode</div>
+                        <div class="inline-flex rounded-full bg-white/5 p-1 ring-1 ring-white/10">
+                          <button
+                            type="button"
+                            data-action="mode"
+                            data-mode="walking"
+                            class="rounded-full px-3 py-1.5 text-xs font-extrabold transition ${
+                              mode === "walking" ? "bg-white/10 text-white" : "text-white/80 hover:text-white"
+                            }"
+                          >Walk</button>
+                          <button
+                            type="button"
+                            data-action="mode"
+                            data-mode="driving"
+                            class="rounded-full px-3 py-1.5 text-xs font-extrabold transition ${
+                              mode === "driving" ? "bg-white/10 text-white" : "text-white/80 hover:text-white"
+                            }"
+                          >Drive</button>
+                          <button
+                            type="button"
+                            data-action="mode"
+                            data-mode="transit"
+                            class="rounded-full px-3 py-1.5 text-xs font-extrabold transition ${
+                              mode === "transit" ? "bg-white/10 text-white" : "text-white/80 hover:text-white"
+                            }"
+                          >Transit</button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="mt-4">
+                      ${
+                        canDirections
+                          ? `
+                            <div class="overflow-hidden rounded-2xl ring-1 ring-white/10 bg-black/10">
+                              <iframe
+                                title="Directions"
+                                src="${escapeHtml(d.src)}"
+                                class="h-[55vh] min-h-[360px] w-full"
+                                loading="lazy"
+                                referrerpolicy="no-referrer-when-downgrade"
+                              ></iframe>
+                            </div>
+                          `
+                          : `
+                            <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+                              <div class="text-sm font-extrabold text-white">Directions unavailable</div>
+                              <div class="mt-1 text-xs text-slate-300">${escapeHtml(
+                                d.reason || "Missing coordinates",
+                              )}</div>
+                              <div class="mt-2 text-[11px] text-slate-400">Tip: add a pin, or paste a Google Maps URL in the Google tab (URLs with @lat,lon work best).</div>
+                            </div>
+                          `
+                      }
+                    </div>
+                  `
+                  : `
+                    <div class="grid gap-3">
+                      <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+                        <div class="text-xs font-semibold text-slate-300">Google Maps URL</div>
+                        <div class="mt-2">
+                          <input
+                            id="googleUrlInput"
+                            type="url"
+                            placeholder="Paste a Google Maps link…"
+                            value="${escapeHtml(googleUrl)}"
+                            class="w-full rounded-2xl bg-black/25 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-400 ring-1 ring-white/10 outline-none focus:ring-2 focus:ring-fuchsia-400/60"
+                          />
+                        </div>
+                        <div class="mt-2 text-[11px] text-slate-400">We try to extract Place ID and coordinates when possible.</div>
+                      </div>
+
+                      <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+                        <div class="text-xs font-semibold text-slate-300">Place ID</div>
+                        <div class="mt-2">
+                          <input
+                            id="googlePlaceIdInput"
+                            type="text"
+                            placeholder="Optional (e.g. ChIJ...)"
+                            value="${escapeHtml(googlePlaceId)}"
+                            class="w-full rounded-2xl bg-black/25 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-400 ring-1 ring-white/10 outline-none focus:ring-2 focus:ring-fuchsia-400/60"
+                          />
+                        </div>
+                        <div class="mt-2 text-[11px] text-slate-400">Stored with the trip (shared).</div>
+                      </div>
+
+                      <div class="flex flex-wrap items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          data-action="clearGoogle"
+                          class="rounded-full bg-white/5 px-4 py-2 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+                        >Clear</button>
+                        <button
+                          type="button"
+                          data-action="saveGoogle"
+                          class="rounded-full bg-white/10 px-4 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
+                        >Save</button>
+                      </div>
+                    </div>
+                  `
+              }
+            </div>
+          </div>
+        `;
+      };
+
+      render();
+
+      const onKeyDown = (e) => {
+        if (e.key === "Escape") close();
+      };
+
+      const cleanup = () => {
+        overlay.remove();
+        window.removeEventListener("keydown", onKeyDown);
+      };
+      const close = () => {
+        cleanup();
+        resolve();
+      };
+
+      window.addEventListener("keydown", onKeyDown);
+
+      overlay.addEventListener("click", async (e) => {
+        if (e.target.closest("[data-action='backdrop']")) return close();
+        if (e.target.closest("button[data-action='close']")) return close();
+
+        const tabBtn = e.target.closest("button[data-action='tab'][data-tab]");
+        if (tabBtn) {
+          activeTab = tabBtn.dataset.tab === "google" ? "google" : "directions";
+          render();
+          return;
+        }
+
+        const originBtn = e.target.closest("button[data-action='origin'][data-origin]");
+        if (originBtn) {
+          originMode = originBtn.dataset.origin === "day" ? "day" : "my";
+          render();
+          return;
+        }
+
+        const modeBtn = e.target.closest("button[data-action='mode'][data-mode]");
+        if (modeBtn) {
+          mode = modeBtn.dataset.mode === "driving" ? "driving" : modeBtn.dataset.mode === "transit" ? "transit" : "walking";
+          gmapsMode = mode;
+          saveGmapsMode(gmapsMode);
+          render();
+          return;
+        }
+
+        const locBtn = e.target.closest("button[data-action='getLocation']");
+        if (locBtn) {
+          startTracking({ auto: false });
+          render();
+          return;
+        }
+
+        const clearBtn = e.target.closest("button[data-action='clearGoogle']");
+        if (clearBtn) {
+          googleUrl = "";
+          googlePlaceId = "";
+          googleLat = null;
+          googleLon = null;
+          setPlaceGoogleMeta(placeId, {});
+          render();
+          showToast("Cleared");
+          return;
+        }
+
+        const saveBtn = e.target.closest("button[data-action='saveGoogle']");
+        if (saveBtn) {
+          const urlEl = overlay.querySelector("#googleUrlInput");
+          const pidEl = overlay.querySelector("#googlePlaceIdInput");
+          googleUrl = String(urlEl?.value || "").trim();
+          googlePlaceId = String(pidEl?.value || "").trim();
+          if (googleUrl) applyGoogleUrlDerived(googleUrl);
+
+          const nextMeta = {};
+          if (googleUrl) nextMeta.url = googleUrl;
+          if (googlePlaceId) nextMeta.placeId = googlePlaceId;
+          if (typeof googleLat === "number" && Number.isFinite(googleLat)) nextMeta.lat = googleLat;
+          if (typeof googleLon === "number" && Number.isFinite(googleLon)) nextMeta.lon = googleLon;
+          setPlaceGoogleMeta(placeId, nextMeta);
+          render();
+          showToast("Saved");
+          return;
+        }
+      });
+
+      overlay.addEventListener("input", (e) => {
+        const el = e.target;
+        if (el?.id === "googleUrlInput") {
+          googleUrl = String(el.value || "");
+          const pid = extractGooglePlaceIdFromUrl(googleUrl);
+          if (pid && (!googlePlaceId || googlePlaceId.length < 8)) {
+            googlePlaceId = pid;
+            const pidEl = overlay.querySelector("#googlePlaceIdInput");
+            if (pidEl) pidEl.value = pid;
+          }
+          const ll = extractLatLngFromGoogleMapsUrl(googleUrl);
+          if (ll) {
+            googleLat = ll.lat;
+            googleLon = ll.lon;
+          }
+        }
+      });
+
+      document.body.appendChild(overlay);
+    });
+
+  const openDayDirectionsModal = () =>
+    new Promise((resolve) => {
+      const day = getActiveDay();
+      if (!day) return resolve();
+
+      const overlay = document.createElement("div");
+      overlay.className = "fixed inset-0 z-[4200] flex items-end md:items-center justify-center";
+
+      let mode = gmapsMode;
+      let startFromMy = false;
+      let selectedIdx = 0;
+
+      const getStops = () =>
+        (day.items || [])
+          .map((it) => ({ it, place: placeById.get(it.placeId) }))
+          .filter((x) => x.place && x.it && x.it.placeId)
+          .map((x) => ({
+            placeId: x.it.placeId,
+            title: x.place.name || "Untitled",
+            latLon: resolvePlaceLatLon(x.it.placeId),
+            startTime: x.it.startTime || "",
+            endTime: x.it.endTime || "",
+          }))
+          .filter((x) => x.latLon);
+
+      const buildLegs = () => {
+        const stops = getStops();
+        const legs = [];
+
+        if (startFromMy && myLocation.lastLatLng && stops.length) {
+          legs.push({
+            fromLabel: "My location",
+            toLabel: stops[0].title,
+            from: { lat: myLocation.lastLatLng.lat, lon: myLocation.lastLatLng.lng },
+            to: { lat: stops[0].latLon.lat, lon: stops[0].latLon.lon },
+          });
+        }
+
+        for (let i = 0; i < stops.length - 1; i += 1) {
+          const a = stops[i];
+          const b = stops[i + 1];
+          legs.push({
+            fromLabel: a.title,
+            toLabel: b.title,
+            from: { lat: a.latLon.lat, lon: a.latLon.lon },
+            to: { lat: b.latLon.lat, lon: b.latLon.lon },
+          });
+        }
+        return legs;
+      };
+
+      const render = () => {
+        const legs = buildLegs();
+        const hasMy = !!myLocation.lastLatLng;
+        if (selectedIdx >= legs.length) selectedIdx = Math.max(0, legs.length - 1);
+        const selected = legs[selectedIdx] || null;
+        const src = selected ? buildGoogleMapsEmbedDirectionsUrl({ origin: selected.from, destination: selected.to, mode }) : null;
+
+        const rows = legs
+          .map((l, idx) => {
+            const active = idx === selectedIdx;
+            return `
+              <button
+                type="button"
+                data-action="leg"
+                data-idx="${idx}"
+                class="w-full rounded-2xl p-3 text-left ring-1 transition ${
+                  active ? "bg-fuchsia-500/15 ring-fuchsia-400/35 text-white" : "bg-white/5 ring-white/10 hover:bg-white/10 text-slate-100"
+                }"
+              >
+                <div class="text-xs font-semibold ${active ? "text-white" : "text-slate-300"}">${escapeHtml(
+                  l.fromLabel,
+                )} → ${escapeHtml(l.toLabel)}</div>
+              </button>
+            `;
+          })
+          .join("");
+
+        const chips = legs
+          .map((l, idx) => {
+            const active = idx === selectedIdx;
+            return `
+              <button
+                type="button"
+                data-action="leg"
+                data-idx="${idx}"
+                class="shrink-0 rounded-full px-3 py-2 text-xs font-extrabold ring-1 transition ${
+                  active ? "bg-fuchsia-500/15 text-white ring-fuchsia-400/35" : "bg-white/5 text-slate-200 ring-white/10 hover:bg-white/10"
+                }"
+              >${escapeHtml(l.fromLabel)} → ${escapeHtml(l.toLabel)}</button>
+            `;
+          })
+          .join("");
+
+        overlay.innerHTML = `
+          <div data-action="backdrop" class="absolute inset-0 bg-black/55 backdrop-blur-sm"></div>
+          <div class="relative w-full md:max-w-5xl md:rounded-3xl rounded-t-3xl border border-white/10 bg-slate-950/80 backdrop-blur-xl shadow-2xl">
+            <div class="border-b border-white/10 px-5 py-4">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="truncate text-base font-extrabold tracking-tight text-white">${escapeHtml(day.title || "Day")}</div>
+                  <div class="mt-1 text-xs text-slate-300">Google directions (in-app)</div>
+                </div>
+                <button
+                  type="button"
+                  data-action="close"
+                  class="shrink-0 rounded-full bg-white/5 px-4 py-2 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+                >Close</button>
+              </div>
+
+              <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
+                <div class="flex flex-wrap items-center gap-2">
+                  <div class="text-xs font-semibold text-slate-300">Mode</div>
+                  <div class="inline-flex rounded-full bg-white/5 p-1 ring-1 ring-white/10">
+                    <button type="button" data-action="mode" data-mode="walking" class="rounded-full px-3 py-1.5 text-xs font-extrabold transition ${
+                      mode === "walking" ? "bg-white/10 text-white" : "text-white/80 hover:text-white"
+                    }">Walk</button>
+                    <button type="button" data-action="mode" data-mode="driving" class="rounded-full px-3 py-1.5 text-xs font-extrabold transition ${
+                      mode === "driving" ? "bg-white/10 text-white" : "text-white/80 hover:text-white"
+                    }">Drive</button>
+                    <button type="button" data-action="mode" data-mode="transit" class="rounded-full px-3 py-1.5 text-xs font-extrabold transition ${
+                      mode === "transit" ? "bg-white/10 text-white" : "text-white/80 hover:text-white"
+                    }">Transit</button>
+                  </div>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <label class="inline-flex items-center gap-2 text-xs text-slate-200">
+                    <input type="checkbox" data-action="startFromMy" ${startFromMy ? "checked" : ""} ${
+                      hasMy ? "" : "disabled"
+                    } />
+                    <span class="${hasMy ? "" : "opacity-40"}">Start from my location</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="px-5 py-4">
+              ${
+                legs.length
+                  ? `
+                    <div class="grid gap-4 md:grid-cols-[260px_minmax(0,1fr)]">
+                      <div class="hidden md:grid gap-2 max-h-[55vh] overflow-auto pr-1">${rows}</div>
+                      <div class="overflow-hidden rounded-2xl ring-1 ring-white/10 bg-black/10">
+                        ${
+                          src
+                            ? `<iframe title="Directions" src="${escapeHtml(
+                                src,
+                              )}" class="h-[55vh] min-h-[360px] w-full" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`
+                            : `<div class="p-4 text-sm text-slate-300">Could not load directions.</div>`
+                        }
+                      </div>
+                    </div>
+                    <div class="mt-3 flex gap-2 overflow-auto pr-1 md:hidden">${chips}</div>
+                  `
+                  : `
+                    <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+                      <div class="text-sm font-extrabold text-white">Not enough pinned stops</div>
+                      <div class="mt-1 text-xs text-slate-300">Add at least 2 stops with coordinates (pins). You can also paste a Google Maps URL on each place to provide coordinates.</div>
+                    </div>
+                  `
+              }
+            </div>
+          </div>
+        `;
+      };
+
+      render();
+
+      const onKeyDown = (e) => {
+        if (e.key === "Escape") close();
+      };
+
+      const cleanup = () => {
+        overlay.remove();
+        window.removeEventListener("keydown", onKeyDown);
+      };
+      const close = () => {
+        cleanup();
+        resolve();
+      };
+
+      window.addEventListener("keydown", onKeyDown);
+
+      overlay.addEventListener("click", (e) => {
+        if (e.target.closest("[data-action='backdrop']")) return close();
+        if (e.target.closest("button[data-action='close']")) return close();
+
+        const legBtn = e.target.closest("button[data-action='leg'][data-idx]");
+        if (legBtn) {
+          selectedIdx = Math.max(0, Number(legBtn.dataset.idx || 0));
+          render();
+          return;
+        }
+
+        const modeBtn = e.target.closest("button[data-action='mode'][data-mode]");
+        if (modeBtn) {
+          mode = modeBtn.dataset.mode === "driving" ? "driving" : modeBtn.dataset.mode === "transit" ? "transit" : "walking";
+          gmapsMode = mode;
+          saveGmapsMode(gmapsMode);
+          render();
+          return;
+        }
+      });
+
+      overlay.addEventListener("change", (e) => {
+        const el = e.target;
+        if (el?.matches?.("input[data-action='startFromMy']")) {
+          startFromMy = !!el.checked;
+          render();
+        }
+      });
+
+      document.body.appendChild(overlay);
+    });
 
   btnLocate.addEventListener("click", () => {
     if (myLocation.watchId != null) {
