@@ -1,6 +1,6 @@
-# Trip Map (list.md / hotel.txt)
+# Trip Map (Google Maps)
 
-This repo generates a modern, interactive map (Leaflet + Tailwind CSS) from:
+This repo generates a modern, interactive trip map + itinerary planner from:
 
 - `list.md` (places + Naver short links)
 - `hotel.txt` (hotel address)
@@ -9,10 +9,34 @@ This repo generates a modern, interactive map (Leaflet + Tailwind CSS) from:
 
 ```bash
 node scripts/generate-places.mjs
+```
+
+1) Configure Google Maps in `config.js`
+
+```js
+export const GOOGLE_MAPS_API_KEY = "YOUR_KEY";
+```
+
+2) Run a local server
+
+```bash
 python3 -m http.server 5173
 ```
 
 Open `http://localhost:5173`.
+
+## Google Maps API (required)
+
+This is a static GitHub Pages app, so the API key is public by design.
+
+1) Create an API key in Google Cloud Console
+2) Restrict by **HTTP referrers**
+   - `https://seenyo.github.io/South-Korea-App/*`
+   - `http://localhost:5173/*`
+   - `http://127.0.0.1:5173/*`
+3) Enable APIs (minimum)
+   - **Maps JavaScript API**
+   - **Directions API**
 
 ## GitHub Pages
 
@@ -25,7 +49,7 @@ Open `http://localhost:5173`.
 GitHub Pages is static, so cross-device sync needs a backend. This app can sync:
 
 - ✅ Shared: Planner (days/stops/time/memo), Favorite / Visited
-- ❌ Not shared: Location tracking, Follow mode, map theme, UI state
+- ❌ Not shared: UI state (e.g., travel mode)
 
 ### 1) Supabase setup (one-time)
 
@@ -60,15 +84,14 @@ select to_regproc('public.request_uid') as request_uid_fn;
 - Tap **＋** on a place to add it to the active day
 - Tap a stop to edit **Start/End time** + **Memo**
 - Stops are automatically sorted by time; remove with **✕**
-- Tap **Directions** to view in-app Google directions (leg-by-leg)
+- Tap **Directions** to render the day route on the map
 - Use **Export/Import** to back up / restore your plan
 
-## Directions (Google, in-app)
+## Directions (Google Maps)
 
-- Places list: tap **↗** to open directions to that place (from **My location** or **Day start**)
-- Pin popup: tap **Directions** (stays inside this app)
-- Optional: Place → **Google** tab → paste a Google Maps URL to store coordinates/Place ID (shared with the trip)
-- Travel mode (Walk/Drive/Transit) is saved per-device (not shared)
+- **Planner → Directions**: route for the active day (pinned stops only)
+- **Place ↗ / Pin Directions**: route from the previous day stop (or day end) to that place
+- Directions are rendered directly on the Google Map (no external Google Maps app/tab)
 
 ## Update pins
 

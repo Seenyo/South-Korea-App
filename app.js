@@ -1,8 +1,8 @@
+import { GOOGLE_MAPS_API_KEY, GOOGLE_MAPS_MAP_ID } from "./config.js";
+
 const $ = (selector, root = document) => root.querySelector(selector);
 
 const STATUS_KEY = "sc_trip_status_v1";
-const LOC_SETTINGS_KEY = "sc_trip_loc_settings_v1";
-const THEME_KEY = "sc_trip_map_theme_v1";
 const PLANNER_KEY = "sc_trip_planner_v1";
 const VIEW_KEY = "sc_trip_view_v1";
 const INSTALL_TIP_KEY = "sc_trip_install_tip_v1";
@@ -92,44 +92,6 @@ function loadStatus() {
 function saveStatus(status) {
   try {
     localStorage.setItem(STATUS_KEY, JSON.stringify(status));
-  } catch {
-    // ignore
-  }
-}
-
-function loadLocSettings() {
-  try {
-    const raw = localStorage.getItem(LOC_SETTINGS_KEY);
-    if (!raw) return { tracking: true, follow: true };
-    const parsed = JSON.parse(raw);
-    const tracking = typeof parsed?.tracking === "boolean" ? parsed.tracking : true;
-    const follow = typeof parsed?.follow === "boolean" ? parsed.follow : true;
-    return { tracking, follow };
-  } catch {
-    return { tracking: true, follow: true };
-  }
-}
-
-function saveLocSettings(settings) {
-  try {
-    localStorage.setItem(LOC_SETTINGS_KEY, JSON.stringify(settings));
-  } catch {
-    // ignore
-  }
-}
-
-function loadThemeId() {
-  try {
-    const raw = localStorage.getItem(THEME_KEY);
-    return raw ? String(raw) : "dark";
-  } catch {
-    return "dark";
-  }
-}
-
-function saveThemeId(themeId) {
-  try {
-    localStorage.setItem(THEME_KEY, String(themeId));
   } catch {
     // ignore
   }
@@ -441,6 +403,56 @@ function registerServiceWorker() {
   });
 }
 
+let googleMapsLoadPromise = null;
+function loadGoogleMapsJsApi({ apiKey, libraries = [] } = {}) {
+  if (window.google?.maps) return Promise.resolve();
+  const key = String(apiKey || "").trim();
+  if (!key) {
+    return Promise.reject(
+      new Error("Missing Google Maps API key. Set GOOGLE_MAPS_API_KEY in config.js"),
+    );
+  }
+
+  if (googleMapsLoadPromise) return googleMapsLoadPromise;
+
+  googleMapsLoadPromise = new Promise((resolve, reject) => {
+    const cb = `__gmaps_cb_${Math.random().toString(36).slice(2)}`;
+    window[cb] = () => {
+      try {
+        delete window[cb];
+      } catch {
+        // ignore
+      }
+      resolve();
+    };
+
+    const params = new URLSearchParams({
+      key,
+      v: "weekly",
+      callback: cb,
+    });
+    const libs = Array.isArray(libraries) ? libraries.filter(Boolean) : [];
+    if (libs.length) params.set("libraries", libs.join(","));
+
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?${params.toString()}`;
+    script.async = true;
+    script.defer = true;
+    script.onerror = () => {
+      try {
+        delete window[cb];
+      } catch {
+        // ignore
+      }
+      reject(new Error("Failed to load Google Maps JavaScript API"));
+    };
+
+    document.head.appendChild(script);
+  });
+
+  return googleMapsLoadPromise;
+}
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -506,91 +518,10 @@ function normalize(text) {
     .trim();
 }
 
-function buildGoogleMapsSearchUrl(place) {
-  const q = place.address || place.name;
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
-}
-
 function buildNaverEntryUrl(place) {
   const placeId = place?.naver?.placeId;
   if (!placeId) return null;
   return `https://map.naver.com/p/entry/place/${placeId}`;
-}
-
-function extractGooglePlaceIdFromUrl(urlLike) {
-  try {
-    const u = new URL(String(urlLike), "https://example.invalid");
-    const params = u.searchParams;
-    const candidates = [
-      params.get("query_place_id"),
-      params.get("place_id"),
-      params.get("origin_place_id"),
-      params.get("destination_place_id"),
-      params.get("waypoint_place_ids"),
-    ]
-      .filter(Boolean)
-      .flatMap((v) => String(v).split("|"))
-      .map((v) => v.trim())
-      .filter(Boolean);
-
-    for (const c of candidates) {
-      // Place IDs are typically 20+ chars (e.g. ChIJ...), but keep it permissive.
-      if (/^[A-Za-z0-9_-]{12,}$/.test(c)) return c;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function extractLatLngFromGoogleMapsUrl(urlLike) {
-  try {
-    const u = new URL(String(urlLike), "https://example.invalid");
-
-    // Common: .../@lat,lon,17z/...
-    const m = u.href.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
-    if (m) {
-      const lat = Number(m[1]);
-      const lon = Number(m[2]);
-      if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
-    }
-
-    // Also common: ?q=lat,lon
-    const q = (u.searchParams.get("q") || u.searchParams.get("query") || "").trim();
-    if (q) {
-      const qm = q.match(/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
-      if (qm) {
-        const lat = Number(qm[1]);
-        const lon = Number(qm[2]);
-        if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
-      }
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function gmapsModeToEmbedCode(mode) {
-  if (mode === "driving") return 0;
-  if (mode === "transit") return 3;
-  return 2; // walking (default)
-}
-
-function buildGoogleMapsEmbedDirectionsUrl({ origin, destination, mode }) {
-  const oLat = Number(origin?.lat);
-  const oLon = Number(origin?.lon);
-  const dLat = Number(destination?.lat);
-  const dLon = Number(destination?.lon);
-  if (![oLat, oLon, dLat, dLon].every((n) => Number.isFinite(n))) return null;
-
-  const m = gmapsModeToEmbedCode(mode);
-  const pb = `!1m10!4m9!3e${m}!4m3!3m2!1d${oLat}!2d${oLon}!4m3!3m2!1d${dLat}!2d${dLon}`;
-  const url = new URL("https://www.google.com/maps/embed");
-  url.searchParams.set("origin", "mfe");
-  url.searchParams.set("pb", pb);
-  return url.toString();
 }
 
 function formatCategoryLabel(category) {
@@ -608,64 +539,31 @@ async function loadPlaces() {
   return { meta: json, places };
 }
 
-function createPinIcon({ category, selected, kind }) {
+function buildMarkerIconDataUrl({ category, selected }) {
   const palette = categoryStyle(category);
   const [c1, c2] = palette.gradient;
-  const label =
-    kind === "hotel" ? "🏨" : kind === "food" ? "🍽️" : kind === "spot" ? "📍" : "";
-  const bubble = `
-    <div class="pin ${selected ? "pin--selected" : ""}">
-      <div class="pin__bubble" style="background: linear-gradient(135deg, ${c1}, ${c2});">
-        <div style="position:absolute; inset:0; display:grid; place-items:center;">
-          <div class="pin__dot"></div>
-        </div>
-        ${
-          label
-            ? `<div style="position:absolute; inset:0; display:grid; place-items:center; font-size:12px; filter: drop-shadow(0 8px 10px rgba(0,0,0,0.35));">${label}</div>`
-            : ""
-        }
-      </div>
-    </div>
-  `;
-  return L.divIcon({
-    className: "",
-    html: bubble,
-    iconSize: [34, 34],
-    iconAnchor: [17, 34],
-    popupAnchor: [0, -30],
-  });
-}
+  const ring = selected
+    ? `<circle cx="17" cy="17" r="16.5" fill="rgba(236,72,153,0.18)" />`
+    : "";
 
-function createClusterGroup() {
-  return L.markerClusterGroup({
-    showCoverageOnHover: false,
-    spiderfyOnMaxZoom: true,
-    maxClusterRadius: 52,
-    iconCreateFunction: (cluster) => {
-      const count = cluster.getChildCount();
-      const t = clamp(count / 24, 0, 1);
-      const c1 = `rgba(${Math.round(236 - 80 * t)}, ${Math.round(72 + 70 * t)}, ${Math.round(
-        153 + 50 * t,
-      )}, 0.92)`;
-      const c2 = `rgba(${Math.round(56 + 80 * t)}, ${Math.round(189 - 40 * t)}, ${Math.round(
-        248 - 90 * t,
-      )}, 0.88)`;
-      const html = `<div class="cluster" style="background: linear-gradient(135deg, ${c1}, ${c2});">${count}</div>`;
-      return L.divIcon({ html, className: "", iconSize: [42, 42] });
-    },
-  });
-}
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="${c1}"/>
+          <stop offset="100%" stop-color="${c2}"/>
+        </linearGradient>
+        <filter id="s" x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="rgba(0,0,0,0.55)"/>
+        </filter>
+      </defs>
+      ${ring}
+      <circle cx="17" cy="17" r="14.8" fill="url(#g)" stroke="rgba(255,255,255,0.18)" stroke-width="1" filter="url(#s)"/>
+      <circle cx="17" cy="17" r="5.2" fill="rgba(255,255,255,0.86)"/>
+    </svg>
+  `.trim();
 
-function createDayNumberIcon(number, { visited = false } = {}) {
-  const n = typeof number === "number" && Number.isFinite(number) ? Math.max(1, Math.round(number)) : "";
-  const klass = `day-num${visited ? " day-num--visited" : ""}`;
-  return L.divIcon({
-    className: "",
-    html: `<div class="${klass}">${n}</div>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
-    popupAnchor: [0, -14],
-  });
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
 function escapeHtml(text) {
@@ -857,14 +755,7 @@ function renderList({ places, selectedId, statusById, inPlannerPlaceIds }) {
       >＋</button>
     `;
 
-    const googleLat = statusById?.[place.id]?.google?.lat;
-    const googleLon = statusById?.[place.id]?.google?.lon;
-    const hasDirectionTarget =
-      pinned ||
-      (typeof googleLat === "number" &&
-        Number.isFinite(googleLat) &&
-        typeof googleLon === "number" &&
-        Number.isFinite(googleLon));
+    const hasDirectionTarget = pinned;
 
     const directionsBtn = `
       <button
@@ -878,7 +769,7 @@ function renderList({ places, selectedId, statusById, inPlannerPlaceIds }) {
             : "bg-white/5 text-slate-200/70 ring-white/10 opacity-40 cursor-not-allowed"
         }"
         title="${
-          hasDirectionTarget ? "Directions" : "Directions need pin coordinates (or a Google Maps URL)"
+          hasDirectionTarget ? "Directions" : "Directions need a pin coordinate"
         }"
       >↗</button>
     `;
@@ -931,24 +822,7 @@ function filterPlaces(places, { query, category }) {
   });
 }
 
-function computeBounds(places) {
-  const pts = places.filter(hasCoords).map((p) => [p.lat, p.lon]);
-  if (!pts.length) return null;
-  return L.latLngBounds(pts);
-}
-
-function guessKind(place) {
-  if (place.source === "hotel.txt") return "hotel";
-  if (/焼肉|冷麺|ソルロンタン|チキン|カンジャンケジャン|イタリアン/.test(place.category || ""))
-    return "food";
-  return "spot";
-}
-
 async function main() {
-  const btnFit = $("#btnFit");
-  const btnLocate = $("#btnLocate");
-  const btnFollow = $("#btnFollow");
-  const btnTheme = $("#btnTheme");
   const searchInput = $("#search");
   const btnClearSearch = $("#btnClearSearch");
   const tabPlaces = $("#tabPlaces");
@@ -998,7 +872,6 @@ async function main() {
   const allPlaces = data.places || [];
   const placeById = new Map(allPlaces.map((p) => [p.id, p]));
   let statusById = loadStatus();
-  let locSettings = loadLocSettings();
   let gmapsMode = loadGmapsMode();
   let planner = loadPlanner();
   let viewId = loadViewId();
@@ -2415,109 +2288,58 @@ async function main() {
       document.body.appendChild(overlay);
     });
 
+  try {
+    await loadGoogleMapsJsApi({
+      apiKey: GOOGLE_MAPS_API_KEY,
+      libraries: ["places", "geometry"],
+    });
+  } catch (err) {
+    document.body.innerHTML = `
+      <div class="min-h-dvh w-full bg-slate-950 text-slate-50 p-6">
+        <div class="max-w-xl">
+          <div class="text-xl font-extrabold">Google Maps is not configured</div>
+          <div class="mt-2 text-slate-300 text-sm">${escapeHtml(String(err?.message || err))}</div>
+          <div class="mt-4 text-sm text-slate-200">
+            <div>1) Open <span class="font-mono">config.js</span></div>
+            <div class="mt-1">2) Set <span class="font-mono">GOOGLE_MAPS_API_KEY</span></div>
+            <div class="mt-4 text-slate-300 text-xs">
+              Tip: restrict the key by HTTP referrer (GitHub Pages + localhost).
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
 
-  const map = L.map("map", {
-    zoomControl: false,
-    preferCanvas: true,
+  const mapDiv = $("#map");
+  if (!mapDiv) {
+    showToast("Map container missing", { durationMs: 5000 });
+    return;
+  }
+
+  const map = new google.maps.Map(mapDiv, {
+    center: { lat: 37.5665, lng: 126.978 },
+    zoom: 12,
+    mapId: GOOGLE_MAPS_MAP_ID ? String(GOOGLE_MAPS_MAP_ID) : undefined,
+    fullscreenControl: true,
+    mapTypeControl: false,
+    streetViewControl: false,
+    clickableIcons: false,
   });
-  L.control.zoom({ position: "topright" }).addTo(map);
 
-  map.attributionControl.setPosition("topleft");
-
-  const THEMES = [
-    {
-      id: "dark",
-      label: "Dark",
-      shortLabel: "Dark",
-      url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-      options: {
-        maxZoom: 20,
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      },
+  const infoWindow = new google.maps.InfoWindow();
+  const directionsService = new google.maps.DirectionsService();
+  const directionsRenderer = new google.maps.DirectionsRenderer({
+    preserveViewport: false,
+    suppressMarkers: true,
+    polylineOptions: {
+      strokeColor: "#fb7185",
+      strokeOpacity: 0.65,
+      strokeWeight: 5,
     },
-    {
-      id: "light",
-      label: "Light",
-      shortLabel: "Light",
-      url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-      options: {
-        maxZoom: 20,
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      },
-    },
-    {
-      id: "voyager",
-      label: "Voyager",
-      shortLabel: "Voy",
-      url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
-      options: {
-        maxZoom: 20,
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      },
-    },
-    {
-      id: "osm",
-      label: "OSM",
-      shortLabel: "OSM",
-      url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-      options: {
-        maxZoom: 19,
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-      },
-    },
-  ];
-
-  let baseLayer = null;
-  let themeId = loadThemeId();
-
-  const setThemeUi = (id) => {
-    if (!btnTheme) return;
-    const theme = THEMES.find((t) => t.id === id) || THEMES[0];
-    btnTheme.textContent = theme.shortLabel || theme.label;
-    btnTheme.title = `Map theme: ${theme.label}`;
-    btnTheme.dataset.theme = theme.id;
-  };
-
-  const setMapTheme = (id, { persist = true } = {}) => {
-    const theme = THEMES.find((t) => t.id === id) || THEMES[0];
-    themeId = theme.id;
-    if (persist) saveThemeId(themeId);
-    setThemeUi(themeId);
-
-    if (baseLayer) {
-      map.removeLayer(baseLayer);
-      baseLayer = null;
-    }
-
-    baseLayer = L.tileLayer(theme.url, theme.options);
-    baseLayer.addTo(map);
-  };
-
-  const cycleTheme = () => {
-    const idx = THEMES.findIndex((t) => t.id === themeId);
-    const next = THEMES[(idx + 1) % THEMES.length];
-    setMapTheme(next.id);
-    showToast(`Theme: ${next.label}`);
-  };
-
-  setMapTheme(themeId, { persist: false });
-  btnTheme?.addEventListener("click", cycleTheme);
-
-  const clusters = createClusterGroup();
-  clusters.addTo(map);
-
-  const plannerLinePane = map.createPane("plannerLine");
-  plannerLinePane.style.zIndex = "590";
-  plannerLinePane.style.pointerEvents = "none";
-
-  const plannerMarkerPane = map.createPane("plannerMarker");
-  plannerMarkerPane.style.zIndex = "640";
-
-  const plannerLayer = L.layerGroup().addTo(map);
+  });
+  directionsRenderer.setMap(null);
 
   const sheetEl = $("#sheet");
   const sheetHandle = $("#sheetHandle");
@@ -2674,7 +2496,7 @@ async function main() {
         snapTo(state.snap, { immediate: true });
       },
       getSafeBottomPxRelativeToMap: () => {
-        const mapRect = map.getContainer().getBoundingClientRect();
+        const mapRect = mapDiv.getBoundingClientRect();
         const sheetRect = sheetEl.getBoundingClientRect();
         return Math.max(0, sheetRect.top - mapRect.top);
       },
@@ -2691,17 +2513,22 @@ async function main() {
   })();
 
   const markersById = new Map();
+  const markerIconSize = new google.maps.Size(34, 34);
+  const markerIconAnchor = new google.maps.Point(17, 17);
   for (const place of allPlaces) {
     if (!hasCoords(place)) continue;
-    const selected = false;
-    const icon = createPinIcon({
-      category: place.category || "",
-      selected,
-      kind: guessKind(place),
+    const iconUrl = buildMarkerIconDataUrl({ category: place.category || "", selected: false });
+    const marker = new google.maps.Marker({
+      position: { lat: place.lat, lng: place.lon },
+      map,
+      title: String(place.name || ""),
+      icon: {
+        url: iconUrl,
+        scaledSize: markerIconSize,
+        anchor: markerIconAnchor,
+      },
     });
-    const marker = L.marker([place.lat, place.lon], { icon });
-    marker.bindPopup(buildPopupHtml(place), { closeButton: true, autoPanPadding: [14, 14] });
-    marker.on("click", () => {
+    marker.addListener("click", () => {
       state.selectedId = place.id;
       syncSelection();
     });
@@ -2974,7 +2801,7 @@ async function main() {
       const result = addPlaceToDayId(placeId, planner.activeDayId);
       sync({ keepView: true });
       if (viewId === "planner") renderPlanner();
-      if (closeMapPopup) map.closePopup();
+      if (closeMapPopup) infoWindow.close();
       if (result.added) {
         showToastAction(`Added to ${result.dayTitle} — tap to open Planner`, {
           durationMs: 4500,
@@ -2990,7 +2817,7 @@ async function main() {
     const result = addPlaceToDayId(placeId, chosenDayId);
     sync({ keepView: true });
     if (viewId === "planner") renderPlanner();
-    if (closeMapPopup) map.closePopup();
+    if (closeMapPopup) infoWindow.close();
 
     if (result.added) {
       showToastAction(`Added to ${result.dayTitle} — tap to open Planner`, {
@@ -3019,54 +2846,77 @@ async function main() {
       const placeId = dirBtn.dataset.placeId;
       if (!placeId) return;
       e.preventDefault();
-      map.closePopup();
-      openPlaceModal(placeId, { tab: "directions" });
+      infoWindow.close();
+      showDirectionsToPlace(placeId);
     }
   });
 
   const fitToPins = (animate = true) => {
-    const bounds = computeBounds(state.filtered);
-    if (!bounds) {
-      map.setView([37.5665, 126.978], 12, { animate });
-      return;
-    }
-    if (bounds.isValid() && bounds.getNorthEast().equals(bounds.getSouthWest())) {
-      map.setView(bounds.getCenter(), 15, { animate });
-      return;
-    }
     const base = 24;
-    const options = { animate };
-    if (sheet?.isEnabled?.()) {
-      const size = map.getSize();
-      let safeBottom = sheet.getSafeBottomPxRelativeToMap();
-      if (safeBottom < 140) safeBottom = size.y;
-      const covered = Math.max(0, size.y - safeBottom);
-      options.paddingTopLeft = [base, base];
-      options.paddingBottomRight = [base, base + covered];
-    } else {
-      options.padding = [base, base];
+    const bounds = new google.maps.LatLngBounds();
+    let count = 0;
+    for (const p of state.filtered) {
+      if (!hasCoords(p)) continue;
+      bounds.extend({ lat: p.lat, lng: p.lon });
+      count += 1;
     }
-    map.fitBounds(bounds.pad(0.18), options);
+
+    if (!count) {
+      map.setCenter({ lat: 37.5665, lng: 126.978 });
+      map.setZoom(12);
+      return;
+    }
+
+    if (count === 1) {
+      const c = bounds.getCenter();
+      map.setCenter(c);
+      map.setZoom(Math.max(map.getZoom() || 0, 15));
+      return;
+    }
+
+    const mapRect = mapDiv.getBoundingClientRect();
+    const sizeY = Math.max(0, Math.round(mapRect.height));
+    let padding = { top: base, right: base, bottom: base, left: base };
+    if (sheet?.isEnabled?.()) {
+      let safeBottom = sheet.getSafeBottomPxRelativeToMap();
+      if (safeBottom < 140) safeBottom = sizeY;
+      const covered = Math.max(0, sizeY - safeBottom);
+      padding = { top: base, right: base, bottom: base + covered, left: base };
+    }
+
+    map.fitBounds(bounds, padding);
   };
 
   const syncMarkers = () => {
-    clusters.clearLayers();
-    for (const place of state.filtered) {
-      const marker = markersById.get(place.id);
-      if (marker) clusters.addLayer(marker);
+    const visible =
+      viewId === "planner"
+        ? (() => {
+            const ids = new Set();
+            const day = getActiveDay();
+            for (const it of day?.items || []) {
+              if (it?.placeId) ids.add(it.placeId);
+            }
+            if (state.selectedId) ids.add(state.selectedId);
+            return ids;
+          })()
+        : new Set(state.filtered.filter(hasCoords).map((p) => p.id));
+    for (const [id, marker] of markersById.entries()) {
+      marker.setVisible(visible.has(id));
     }
   };
 
-  const syncSelection = () => {
+  const syncSelection = ({ pan = true } = {}) => {
     for (const [id, marker] of markersById.entries()) {
       const place = placeById.get(id);
       if (!place) continue;
-      const icon = createPinIcon({
-        category: place.category || "",
-        selected: id === state.selectedId,
-        kind: guessKind(place),
+      marker.setIcon({
+        url: buildMarkerIconDataUrl({
+          category: place.category || "",
+          selected: id === state.selectedId,
+        }),
+        scaledSize: markerIconSize,
+        anchor: markerIconAnchor,
       });
-      marker.setIcon(icon);
     }
     renderList({
       places: state.filtered,
@@ -3076,11 +2926,21 @@ async function main() {
     });
 
     const selectedMarker = state.selectedId ? markersById.get(state.selectedId) : null;
-    if (!selectedMarker) return;
-    clusters.zoomToShowLayer(selectedMarker, () => {
-      selectedMarker.openPopup();
-      map.flyTo(selectedMarker.getLatLng(), Math.max(map.getZoom(), 15), { duration: 0.65 });
-    });
+    if (!selectedMarker || !selectedMarker.getVisible()) {
+      infoWindow.close();
+      return;
+    }
+
+    const place = state.selectedId ? placeById.get(state.selectedId) : null;
+    if (place) {
+      infoWindow.setContent(buildPopupHtml(place));
+      infoWindow.open({ map, anchor: selectedMarker });
+    }
+
+    if (pan) {
+      map.panTo(selectedMarker.getPosition());
+      map.setZoom(Math.max(map.getZoom() || 0, 15));
+    }
   };
 
   const sync = ({ keepView = false } = {}) => {
@@ -3150,7 +3010,7 @@ async function main() {
         return;
       }
       if (placeId && action === "directions") {
-        openPlaceModal(placeId, { tab: "directions" });
+        showDirectionsToPlace(placeId);
         return;
       }
       return;
@@ -3187,12 +3047,13 @@ async function main() {
     showToast("Search cleared");
   });
 
-  btnFit.addEventListener("click", () => {
-    fitToPins(true);
-    showToast("Fit to pins");
-  });
-
-  const clearPlannerOverlay = () => plannerLayer.clearLayers();
+  let plannerPolyline = null;
+  const clearPlannerOverlay = () => {
+    if (plannerPolyline) {
+      plannerPolyline.setMap(null);
+      plannerPolyline = null;
+    }
+  };
 
   const renderPlannerOverlay = () => {
     clearPlannerOverlay();
@@ -3201,41 +3062,24 @@ async function main() {
     const day = getActiveDay();
     if (!day) return;
 
-    const latLngs = [];
+    const path = [];
     for (let idx = 0; idx < day.items.length; idx += 1) {
       const item = day.items[idx];
       const place = placeById.get(item.placeId);
       if (!place || !hasCoords(place)) continue;
-      latLngs.push([place.lat, place.lon]);
+      path.push({ lat: place.lat, lng: place.lon });
     }
 
-    if (latLngs.length >= 2) {
-      L.polyline(latLngs, {
-        pane: "plannerLine",
-        color: "#fb7185",
-        weight: 4,
-        opacity: 0.55,
-        lineCap: "round",
-        lineJoin: "round",
-        interactive: false,
-      }).addTo(plannerLayer);
-    }
-
-    for (let idx = 0; idx < day.items.length; idx += 1) {
-      const item = day.items[idx];
-      const place = placeById.get(item.placeId);
-      if (!place || !hasCoords(place)) continue;
-      const visited = !!statusById?.[place.id]?.visited;
-      const marker = L.marker([place.lat, place.lon], {
-        pane: "plannerMarker",
-        icon: createDayNumberIcon(idx + 1, { visited }),
-        keyboard: false,
+    if (path.length >= 2) {
+      plannerPolyline = new google.maps.Polyline({
+        path,
+        geodesic: true,
+        strokeColor: "#fb7185",
+        strokeOpacity: 0.55,
+        strokeWeight: 4,
+        clickable: false,
       });
-      marker.on("click", () => {
-        state.selectedId = place.id;
-        syncSelection();
-      });
-      marker.addTo(plannerLayer);
+      plannerPolyline.setMap(map);
     }
   };
 
@@ -3436,6 +3280,9 @@ async function main() {
 
     if (viewId === "planner") renderPlanner();
     else clearPlannerOverlay();
+
+    syncMarkers();
+    if (state.selectedId) syncSelection({ pan: false });
 
     sheet?.refresh?.();
   };
@@ -3661,40 +3508,218 @@ async function main() {
   btnPlanFit?.addEventListener("click", () => {
     const day = getActiveDay();
     if (!day) return;
-    const pts = day.items
-      .map((it) => placeById.get(it.placeId))
-      .filter((p) => p && hasCoords(p))
-      .map((p) => [p.lat, p.lon]);
-    if (!pts.length) {
+    const bounds = new google.maps.LatLngBounds();
+    let count = 0;
+    for (const it of day.items) {
+      const p = placeById.get(it.placeId);
+      if (!p || !hasCoords(p)) continue;
+      bounds.extend({ lat: p.lat, lng: p.lon });
+      count += 1;
+    }
+    if (!count) {
       showToast("No pins in this day");
       return;
     }
-    const bounds = L.latLngBounds(pts);
-    if (bounds.isValid() && bounds.getNorthEast().equals(bounds.getSouthWest())) {
-      map.setView(bounds.getCenter(), 15, { animate: true });
+    const base = 24;
+    if (count === 1) {
+      const c = bounds.getCenter();
+      map.setCenter(c);
+      map.setZoom(Math.max(map.getZoom() || 0, 15));
       showToast("Fit day");
       return;
     }
-    const base = 24;
-    const options = { animate: true };
+    const mapRect = mapDiv.getBoundingClientRect();
+    const sizeY = Math.max(0, Math.round(mapRect.height));
+    let padding = { top: base, right: base, bottom: base, left: base };
     if (sheet?.isEnabled?.()) {
-      const size = map.getSize();
       let safeBottom = sheet.getSafeBottomPxRelativeToMap();
-      if (safeBottom < 140) safeBottom = size.y;
-      const covered = Math.max(0, size.y - safeBottom);
-      options.paddingTopLeft = [base, base];
-      options.paddingBottomRight = [base, base + covered];
-    } else {
-      options.padding = [base, base];
+      if (safeBottom < 140) safeBottom = sizeY;
+      const covered = Math.max(0, sizeY - safeBottom);
+      padding = { top: base, right: base, bottom: base + covered, left: base };
     }
-    map.fitBounds(bounds.pad(0.18), options);
+    map.fitBounds(bounds, padding);
     showToast("Fit day");
   });
 
-  btnPlanRoute?.addEventListener("click", () => openDayDirectionsModal());
-
   setView(viewId, { persist: false });
 
+  const travelModeToEnum = (mode) => {
+    if (mode === "driving") return google.maps.TravelMode.DRIVING;
+    if (mode === "transit") return google.maps.TravelMode.TRANSIT;
+    return google.maps.TravelMode.WALKING;
+  };
+
+  let activeDirections = null; // { kind: 'day'|'place', key: string }
+
+  const clearDirections = ({ toast } = {}) => {
+    directionsRenderer.setMap(null);
+    activeDirections = null;
+    if (toast) showToast(toast);
+  };
+
+  const summarizeDirections = (result) => {
+    const route = result?.routes?.[0];
+    if (!route || !Array.isArray(route.legs)) return "";
+    let distM = 0;
+    let durS = 0;
+    for (const leg of route.legs) {
+      distM += leg?.distance?.value || 0;
+      durS += leg?.duration?.value || 0;
+    }
+    const parts = [];
+    if (distM > 0) {
+      parts.push(distM < 950 ? `${Math.round(distM)} m` : `${(distM / 1000).toFixed(distM >= 10_000 ? 0 : 1)} km`);
+    }
+    if (durS > 0) {
+      const minutes = Math.max(1, Math.round(durS / 60));
+      const hours = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+      parts.push(hours ? `${hours}h ${mins}m` : `${minutes} min`);
+    }
+    return parts.join(" · ");
+  };
+
+  const requestDirections = (request) =>
+    new Promise((resolve, reject) => {
+      directionsService.route(request, (result, status) => {
+        if (status === "OK" && result) return resolve(result);
+        reject(new Error(typeof status === "string" ? status : "Directions failed"));
+      });
+    });
+
+  const getActiveDayPinnedStops = () => {
+    const day = getActiveDay();
+    const stops = [];
+    for (const it of day?.items || []) {
+      const p = placeById.get(it.placeId);
+      if (!p || !hasCoords(p)) continue;
+      stops.push({ placeId: p.id, lat: p.lat, lng: p.lon });
+    }
+    return { day, stops };
+  };
+
+  const showDirectionsForActiveDay = async () => {
+    const { day, stops } = getActiveDayPinnedStops();
+    if (!day) return;
+
+    if (activeDirections?.kind === "day" && activeDirections?.key === day.id) {
+      clearDirections({ toast: "Directions cleared" });
+      return;
+    }
+
+    if (stops.length < 2) {
+      clearDirections();
+      showToast("Add at least 2 pinned stops in this day");
+      return;
+    }
+
+    const origin = { lat: stops[0].lat, lng: stops[0].lng };
+    const destination = { lat: stops[stops.length - 1].lat, lng: stops[stops.length - 1].lng };
+    const waypoints = stops.slice(1, -1).map((s) => ({
+      location: { lat: s.lat, lng: s.lng },
+      stopover: true,
+    }));
+
+    try {
+      const result = await requestDirections({
+        origin,
+        destination,
+        waypoints,
+        optimizeWaypoints: false,
+        travelMode: travelModeToEnum(gmapsMode),
+      });
+      directionsRenderer.setMap(map);
+      directionsRenderer.setDirections(result);
+      activeDirections = { kind: "day", key: day.id };
+      showToast(summarizeDirections(result) || "Directions shown", { durationMs: 3500 });
+    } catch (err) {
+      clearDirections();
+      showToast(`Directions failed: ${String(err?.message || err)}`.slice(0, 140), { durationMs: 5000 });
+    }
+  };
+
+  const showDirectionsToPlace = async (placeId) => {
+    const destPlace = placeById.get(placeId);
+    if (!destPlace || !hasCoords(destPlace)) {
+      showToast("This place has no pin coordinates");
+      return;
+    }
+    const destination = { lat: destPlace.lat, lng: destPlace.lon };
+
+    let origin = null;
+    let originId = "";
+
+    const { stops } = getActiveDayPinnedStops();
+    if (stops.length) {
+      const idx = stops.findIndex((s) => s.placeId === placeId);
+      if (idx > 0) {
+        const prev = stops[idx - 1];
+        origin = { lat: prev.lat, lng: prev.lng };
+        originId = prev.placeId;
+      } else if (idx === -1) {
+        const last = stops[stops.length - 1];
+        origin = { lat: last.lat, lng: last.lng };
+        originId = last.placeId;
+      } else {
+        showToast("This is the first stop of the day — use Day Directions");
+        return;
+      }
+    }
+
+    if (!origin) {
+      const selectedId = state.selectedId;
+      if (selectedId && selectedId !== placeId) {
+        const selectedPlace = placeById.get(selectedId);
+        if (selectedPlace && hasCoords(selectedPlace)) {
+          origin = { lat: selectedPlace.lat, lng: selectedPlace.lon };
+          originId = selectedPlace.id;
+        }
+      }
+    }
+
+    if (!origin) {
+      showToast("Pick an origin: add a pinned stop (Planner) or select another pinned place");
+      return;
+    }
+
+    const key = `${originId || `${origin.lat},${origin.lng}`}>${placeId}`;
+    if (activeDirections?.kind === "place" && activeDirections?.key === key) {
+      clearDirections({ toast: "Directions cleared" });
+      return;
+    }
+
+    try {
+      const result = await requestDirections({
+        origin,
+        destination,
+        travelMode: travelModeToEnum(gmapsMode),
+      });
+      directionsRenderer.setMap(map);
+      directionsRenderer.setDirections(result);
+      activeDirections = { kind: "place", key };
+      showToast(summarizeDirections(result) || "Directions shown", { durationMs: 3500 });
+    } catch (err) {
+      clearDirections();
+      showToast(`Directions failed: ${String(err?.message || err)}`.slice(0, 140), { durationMs: 5000 });
+    }
+  };
+
+  btnPlanRoute?.addEventListener("click", () => showDirectionsForActiveDay());
+
+  const refreshMap = () => {
+    try {
+      google.maps.event.trigger(map, "resize");
+    } catch {
+      // ignore
+    }
+  };
+  if (typeof ResizeObserver === "function") {
+    const ro = new ResizeObserver(() => refreshMap());
+    ro.observe(mapDiv);
+  }
+  window.addEventListener("resize", refreshMap);
+
+  if (false) {
   const myLocationPane = map.createPane("mylocation");
   myLocationPane.style.zIndex = "650";
 
@@ -4516,22 +4541,10 @@ async function main() {
     }
   });
 
-  sync();
-  fitToPins(false);
-  const invalidate = () => map.invalidateSize({ animate: false });
-  window.setTimeout(invalidate, 50);
-  window.addEventListener("resize", invalidate);
-
-  setFollowUi(locSettings.follow);
-  setLocateUi(myLocation.watchId != null);
-
-  if (locSettings.tracking) {
-    startTracking({ auto: true });
-  } else {
-    setLocateUi(false);
   }
 
-  sheet?.onSnap?.(() => keepMyLocationInView(true));
+  sync();
+  window.setTimeout(refreshMap, 50);
 
   const maybeAutoConnect = async () => {
     const fromUrl = parseTripParamsFromUrl(window.location.href);

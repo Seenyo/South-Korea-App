@@ -1,12 +1,13 @@
 /* eslint-disable no-restricted-globals */
 
-const CACHE_NAME = "sc-trip-map-cache";
-const RUNTIME_CACHE = "sc-trip-map-runtime";
+const CACHE_NAME = "sc-trip-map-cache-v2";
+const RUNTIME_CACHE = "sc-trip-map-runtime-v2";
 
 const APP_SHELL = [
   "./",
   "./index.html",
   "./app.js",
+  "./config.js",
   "./manifest.webmanifest",
   "./data/places.json",
   "./assets/icons/icon-192.png",
@@ -15,19 +16,19 @@ const APP_SHELL = [
   "./assets/icons/apple-touch-icon.png",
 ];
 
-const isTileRequest = (url) =>
-  url.hostname === "tile.openstreetmap.org" ||
-  url.hostname.endsWith(".tile.openstreetmap.org") ||
-  url.hostname.endsWith(".basemaps.cartocdn.com") ||
-  url.hostname === "a.basemaps.cartocdn.com" ||
-  url.hostname === "b.basemaps.cartocdn.com" ||
-  url.hostname === "c.basemaps.cartocdn.com" ||
-  url.hostname === "d.basemaps.cartocdn.com";
-
 const isSupabaseRequest = (url) => url.hostname.endsWith(".supabase.co");
 
-const isGoogleMapsRequest = (url) =>
-  url.hostname === "www.google.com" && (url.pathname.startsWith("/maps") || url.pathname.startsWith("/maps/"));
+const isGoogleRequest = (url) => {
+  const h = url.hostname;
+  return (
+    h === "google.com" ||
+    h.endsWith(".google.com") ||
+    h === "gstatic.com" ||
+    h.endsWith(".gstatic.com") ||
+    h === "googleapis.com" ||
+    h.endsWith(".googleapis.com")
+  );
+};
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -105,14 +106,11 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Cross-origin tiles: don't cache (storage heavy + provider policies).
-  if (isTileRequest(url)) return;
-
   // Supabase is dynamic API data: never cache (prevents stale sync).
   if (isSupabaseRequest(url)) return;
 
-  // Google Maps embeds are dynamic/heavy: never cache.
-  if (isGoogleMapsRequest(url)) return;
+  // Google Maps is dynamic/heavy: never cache.
+  if (isGoogleRequest(url)) return;
 
   // Other cross-origin (fonts, CDN JS/CSS): cache-first.
   event.respondWith(cacheFirst(request, RUNTIME_CACHE));

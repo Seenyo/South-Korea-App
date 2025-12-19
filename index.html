@@ -23,13 +23,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
 
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
-    <link
-      rel="stylesheet"
-      href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"
-    />
-
     <style>
       :root {
         color-scheme: dark;
@@ -49,162 +42,6 @@
           Arial,
           "Apple Color Emoji",
           "Segoe UI Emoji";
-      }
-
-      .leaflet-container {
-        background: #0b1020;
-      }
-      .leaflet-control-attribution {
-        background: rgba(2, 6, 23, 0.6) !important;
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 999px;
-        margin: 10px !important;
-        padding: 4px 10px !important;
-        color: rgba(226, 232, 240, 0.8) !important;
-      }
-      .leaflet-control-attribution a {
-        color: rgba(226, 232, 240, 0.9) !important;
-        text-decoration: none;
-      }
-
-      .leaflet-popup-content-wrapper,
-      .leaflet-popup-tip {
-        background: rgba(2, 6, 23, 0.92) !important;
-        color: rgba(226, 232, 240, 0.95) !important;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
-        backdrop-filter: blur(14px);
-      }
-      .leaflet-popup-content {
-        margin: 14px 16px !important;
-      }
-
-      .pin {
-        width: 34px;
-        height: 34px;
-        transform: translate(-50%, -100%);
-        filter: drop-shadow(0 10px 20px rgba(0, 0, 0, 0.55));
-      }
-      .pin__bubble {
-        width: 34px;
-        height: 34px;
-        border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        box-shadow:
-          inset 0 0 0 1px rgba(0, 0, 0, 0.25),
-          0 12px 30px rgba(0, 0, 0, 0.35);
-      }
-      .pin__dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.85);
-        box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.16);
-      }
-      .pin--selected .pin__bubble {
-        box-shadow:
-          0 0 0 10px rgba(236, 72, 153, 0.16),
-          0 0 0 2px rgba(236, 72, 153, 0.35),
-          0 20px 40px rgba(0, 0, 0, 0.55);
-      }
-
-      .cluster {
-        width: 42px;
-        height: 42px;
-        transform: translate(-50%, -50%);
-        border-radius: 999px;
-        display: grid;
-        place-items: center;
-        font-weight: 800;
-        letter-spacing: -0.02em;
-        color: rgba(255, 255, 255, 0.95);
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        box-shadow:
-          inset 0 0 0 1px rgba(0, 0, 0, 0.3),
-          0 18px 40px rgba(0, 0, 0, 0.45);
-        backdrop-filter: blur(10px);
-      }
-
-      .day-num {
-        width: 28px;
-        height: 28px;
-        transform: translate(-50%, -50%);
-        border-radius: 999px;
-        display: grid;
-        place-items: center;
-        font-weight: 900;
-        font-size: 12px;
-        letter-spacing: -0.02em;
-        color: rgba(255, 255, 255, 0.96);
-        background: linear-gradient(135deg, rgba(236, 72, 153, 0.95), rgba(34, 211, 238, 0.85));
-        border: 1px solid rgba(255, 255, 255, 0.22);
-        box-shadow:
-          inset 0 0 0 1px rgba(0, 0, 0, 0.28),
-          0 16px 36px rgba(0, 0, 0, 0.45);
-        backdrop-filter: blur(10px);
-      }
-      .day-num.day-num--visited {
-        opacity: 0.55;
-        filter: saturate(0.6);
-      }
-
-      .my-loc {
-        position: relative;
-        width: 18px;
-        height: 18px;
-        filter: drop-shadow(0 12px 22px rgba(0, 0, 0, 0.45));
-      }
-      .my-loc__dot {
-        position: absolute;
-        inset: 0;
-        border-radius: 999px;
-        background: rgba(34, 211, 238, 0.95);
-        border: 2px solid rgba(255, 255, 255, 0.92);
-        box-shadow:
-          0 0 0 6px rgba(34, 211, 238, 0.16),
-          0 18px 40px rgba(0, 0, 0, 0.35);
-      }
-      .my-loc__pulse {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        width: 18px;
-        height: 18px;
-        border-radius: 999px;
-        background: rgba(34, 211, 238, 0.25);
-        transform: translate(-50%, -50%) scale(1);
-        animation: myloc-pulse 1.9s ease-out infinite;
-      }
-      @keyframes myloc-pulse {
-        0% {
-          transform: translate(-50%, -50%) scale(1);
-          opacity: 0.65;
-        }
-        100% {
-          transform: translate(-50%, -50%) scale(3.2);
-          opacity: 0;
-        }
-      }
-
-      #btnLocate[data-active="true"] {
-        background: rgba(34, 211, 238, 0.14) !important;
-        box-shadow:
-          inset 0 0 0 1px rgba(34, 211, 238, 0.28),
-          0 14px 30px rgba(0, 0, 0, 0.22);
-      }
-      #btnLocate[data-active="true"]:hover {
-        background: rgba(34, 211, 238, 0.18) !important;
-      }
-
-      #btnFollow[data-active="true"] {
-        background: rgba(236, 72, 153, 0.16) !important;
-        box-shadow:
-          inset 0 0 0 1px rgba(236, 72, 153, 0.32),
-          0 14px 30px rgba(0, 0, 0, 0.22);
-      }
-      #btnFollow[data-active="true"]:hover {
-        background: rgba(236, 72, 153, 0.2) !important;
       }
 
       #toast[data-clickable="true"] {
@@ -286,43 +123,6 @@
               <div class="flex items-center justify-between gap-3">
                 <div class="min-w-0">
                   <div class="text-base font-extrabold tracking-tight md:text-xl">Trip Map</div>
-                  <div class="hidden text-xs text-slate-300 md:block">
-                    `list.md` / `hotel.txt` → pins (Seoul)
-                  </div>
-                </div>
-                <div class="flex flex-wrap items-center justify-end gap-2">
-                  <button
-                    id="btnFollow"
-                    class="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15 active:scale-[0.99]"
-                    type="button"
-                    title="Follow my location"
-                  >
-                    Follow
-                  </button>
-                  <button
-                    id="btnTheme"
-                    class="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15 active:scale-[0.99]"
-                    type="button"
-                    title="Change map theme"
-                  >
-                    Theme
-                  </button>
-                  <button
-                    id="btnFit"
-                    class="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15 active:scale-[0.99]"
-                    type="button"
-                    title="全ピンが見えるように移動"
-                  >
-                    Fit
-                  </button>
-                  <button
-                    id="btnLocate"
-                    class="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15 active:scale-[0.99]"
-                    type="button"
-                    title="現在地を表示"
-                  >
-                    Locate
-                  </button>
                 </div>
               </div>
 
@@ -506,8 +306,6 @@
       </div>
     </div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
     <script type="module" src="./app.js"></script>
   </body>
 </html>
