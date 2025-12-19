@@ -9,6 +9,8 @@ const INSTALL_TIP_KEY = "sc_trip_install_tip_v1";
 const CAT_EXPANDED_KEY = "sc_trip_cat_expanded_v1";
 const SYNC_SETTINGS_KEY = "sc_trip_sync_v1";
 const CLIENT_ID_KEY = "sc_trip_client_id_v1";
+const LAST_USER_KEY = "sc_trip_last_user_v1";
+const ONBOARDING_SEEN_KEY = "sc_trip_onboarding_seen_v1";
 
 function uid(prefix) {
   const p = prefix ? `${prefix}_` : "";
@@ -53,10 +55,11 @@ function loadSyncSettings() {
     const raw = localStorage.getItem(SYNC_SETTINGS_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
+    const userId = typeof parsed?.userId === "string" ? parsed.userId.trim() : "";
     const tripId = typeof parsed?.tripId === "string" ? parsed.tripId.trim() : "";
     const joinCode = typeof parsed?.joinCode === "string" ? parsed.joinCode.trim() : "";
     if (!tripId || !joinCode) return null;
-    return { tripId, joinCode };
+    return { userId: userId || null, tripId, joinCode };
   } catch {
     return null;
   }
@@ -883,11 +886,19 @@ async function main() {
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1wcWJhY3RzcmJwb3F0dmVxb21tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwNDAzNzMsImV4cCI6MjA4MTYxNjM3M30.Ddjn-9Jkk7lvncMavUYRuUdSrXoHSdj0fCJVv9z9EIo";
   const SUPABASE_JS_VERSION = "2.88.0";
 
+  const authState = {
+    session: null,
+    userId: null,
+    nickname: null,
+  };
+
   const syncState = {
     enabled: false,
     connecting: false,
     tripId: null,
     joinCode: null,
+    tripTitle: null,
+    tripCreatedBy: null,
     client: null,
     channel: null,
     pushTimer: null,
@@ -913,7 +924,7 @@ async function main() {
       "hover:bg-white/15",
     ];
     btnSync.className = base.join(" ");
-    btnSync.textContent = state === "on" ? "Sync ✓" : state === "connecting" ? "Sync…" : "Sync";
+    btnSync.textContent = state === "on" ? "Trips ✓" : state === "connecting" ? "Trips…" : "Trips";
     if (state === "on") {
       btnSync.classList.add("bg-emerald-500/15", "ring-emerald-400/30");
     } else if (state === "connecting") {
@@ -1035,7 +1046,12 @@ async function main() {
     if (typeof createClient !== "function") throw new Error("Supabase client load failed");
 
     syncState.client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+        flowType: "pkce",
+      },
     });
     return syncState.client;
   };
@@ -1044,24 +1060,344 @@ async function main() {
     const msg = String(err?.message || err || "");
     const lower = msg.toLowerCase();
     const code = typeof err?.code === "string" ? err.code : "";
-    if (lower.includes("signinanonymously") || lower.includes("anonymous sign")) {
-      return "Enable Anonymous sign-ins in Supabase";
-    }
     if (code === "42501" || lower.includes("row-level security") || lower.includes("row level security")) {
       return "Supabase policy blocked sync — re-run supabase_setup.sql";
     }
     return null;
   };
 
-  const ensureAuthed = async (client) => {
-    const session = await client.auth.getSession();
-    if (session?.data?.session) return session.data.session;
-    const res = await client.auth.signInAnonymously();
-    if (res?.error) throw res.error;
-    const next = await client.auth.getSession();
-    if (next?.data?.session) return next.data.session;
-    throw new Error("Anonymous auth failed");
+  const stripAuthParamsFromUrl = () => {
+    try {
+      const u = new URL(window.location.href);
+      for (const k of [
+        "code",
+        "state",
+        "error",
+        "error_code",
+        "error_description",
+        "provider",
+        "type",
+      ]) {
+        u.searchParams.delete(k);
+      }
+      return u.toString();
+    } catch {
+      return null;
+    }
   };
+
+  const getNicknameFromSession = (session) => {
+    const meta = session?.user?.user_metadata;
+    const nick = typeof meta?.nickname === "string" ? meta.nickname.trim() : "";
+    return nick || null;
+  };
+
+  const showSignInGate = async (client, { errorMessage } = {}) => {
+    const existing = $("#authGate");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "authGate";
+    overlay.className = "fixed inset-0 z-[6000] flex items-center justify-center p-6";
+
+    overlay.innerHTML = `
+      <div class="absolute inset-0 bg-black/65 backdrop-blur-md"></div>
+      <div class="relative w-full max-w-sm rounded-3xl border border-white/10 bg-slate-950/80 p-6 shadow-2xl">
+        <div class="text-lg font-extrabold tracking-tight text-white">Trip Planner</div>
+        <div class="mt-1 text-sm text-slate-300">Sign in to sync across devices & friends.</div>
+        ${errorMessage ? `<div class="mt-3 rounded-2xl bg-rose-500/10 p-3 text-[11px] text-rose-100 ring-1 ring-rose-400/20">${escapeHtml(errorMessage)}</div>` : ""}
+
+        <div class="mt-5 grid gap-2">
+          <button
+            type="button"
+            data-action="google"
+            class="w-full rounded-2xl bg-white/10 px-4 py-3 text-left ring-1 ring-white/10 transition hover:bg-white/15"
+          >
+            <div class="text-sm font-extrabold text-white">Continue with Google</div>
+            <div class="mt-1 text-[11px] text-slate-300">Required</div>
+          </button>
+          <div class="text-[11px] text-slate-400">Tip: if nothing happens, disable pop-up blockers and try again.</div>
+        </div>
+      </div>
+    `;
+
+    overlay.addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-action='google']");
+      if (!btn) return;
+      btn.disabled = true;
+      try {
+        await client.auth.signInWithOAuth({
+          provider: "google",
+          options: { redirectTo: window.location.href },
+        });
+      } catch (err) {
+        btn.disabled = false;
+        showToast(String(err?.message || err || "Sign-in failed"), { durationMs: 4000 });
+      }
+    });
+
+    document.body.appendChild(overlay);
+  };
+
+  const openNicknameModal = ({ suggested } = {}) =>
+    new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "fixed inset-0 z-[6100] flex items-end md:items-center justify-center";
+      overlay.innerHTML = `
+        <div class="absolute inset-0 bg-black/55 backdrop-blur-sm"></div>
+        <div class="relative w-full md:max-w-md md:rounded-3xl rounded-t-3xl border border-white/10 bg-slate-950/80 backdrop-blur-xl shadow-2xl">
+          <div class="border-b border-white/10 px-5 py-4">
+            <div class="text-base font-extrabold tracking-tight text-white">Pick a nickname</div>
+            <div class="mt-1 text-xs text-slate-300">Shown to collaborators in the future.</div>
+          </div>
+
+          <div class="px-5 py-4">
+            <label class="block">
+              <span class="sr-only">Nickname</span>
+              <input
+                id="nickInput"
+                type="text"
+                autocomplete="nickname"
+                maxlength="30"
+                placeholder="e.g. Kenta"
+                value="${escapeHtml(String(suggested || ""))}"
+                class="w-full rounded-2xl bg-black/25 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-400 ring-1 ring-white/10 outline-none focus:ring-2 focus:ring-fuchsia-400/60"
+              />
+            </label>
+            <div class="mt-2 text-[11px] text-slate-400">You can change this later.</div>
+          </div>
+
+          <div class="flex items-center justify-end gap-2 border-t border-white/10 px-5 py-4">
+            <button
+              type="button"
+              data-action="cancel"
+              class="rounded-full bg-white/5 px-4 py-2 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+            >Sign out</button>
+            <button
+              type="button"
+              data-action="save"
+              class="rounded-full bg-white/10 px-4 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
+            >Save</button>
+          </div>
+        </div>
+      `;
+
+      let cleanup = () => overlay.remove();
+      const close = (value) => {
+        cleanup();
+        resolve(value);
+      };
+
+      const input = overlay.querySelector("#nickInput");
+      const saveBtn = overlay.querySelector("button[data-action='save']");
+      const updateSaveEnabled = () => {
+        const value = String(input?.value || "").trim();
+        saveBtn.disabled = value.length < 1;
+      };
+      input?.addEventListener("input", updateSaveEnabled);
+      updateSaveEnabled();
+
+      overlay.addEventListener("click", (e) => {
+        if (e.target.closest("button[data-action='cancel']")) return close(null);
+        if (e.target.closest("button[data-action='save']")) {
+          const value = String(input?.value || "").trim();
+          if (!value) return;
+          return close(value);
+        }
+      });
+
+      document.body.appendChild(overlay);
+      input?.focus?.();
+      try {
+        input?.setSelectionRange?.(999, 999);
+      } catch {
+        // ignore
+      }
+    });
+
+  const openTextPromptModal = ({
+    title,
+    subtitle,
+    placeholder,
+    initialValue,
+    confirmLabel = "Save",
+  } = {}) =>
+    new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "fixed inset-0 z-[6100] flex items-end md:items-center justify-center";
+      overlay.innerHTML = `
+        <div class="absolute inset-0 bg-black/55 backdrop-blur-sm"></div>
+        <div class="relative w-full md:max-w-md md:rounded-3xl rounded-t-3xl border border-white/10 bg-slate-950/80 backdrop-blur-xl shadow-2xl">
+          <div class="border-b border-white/10 px-5 py-4">
+            <div class="text-base font-extrabold tracking-tight text-white">${escapeHtml(
+              String(title || "Edit"),
+            )}</div>
+            ${subtitle ? `<div class="mt-1 text-xs text-slate-300">${escapeHtml(String(subtitle))}</div>` : ""}
+          </div>
+
+          <div class="px-5 py-4">
+            <label class="block">
+              <span class="sr-only">Value</span>
+              <input
+                id="promptInput"
+                type="text"
+                maxlength="60"
+                placeholder="${escapeHtml(String(placeholder || ""))}"
+                value="${escapeHtml(String(initialValue || ""))}"
+                class="w-full rounded-2xl bg-black/25 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-400 ring-1 ring-white/10 outline-none focus:ring-2 focus:ring-fuchsia-400/60"
+              />
+            </label>
+          </div>
+
+          <div class="flex items-center justify-end gap-2 border-t border-white/10 px-5 py-4">
+            <button
+              type="button"
+              data-action="cancel"
+              class="rounded-full bg-white/5 px-4 py-2 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+            >Cancel</button>
+            <button
+              type="button"
+              data-action="save"
+              class="rounded-full bg-white/10 px-4 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
+            >${escapeHtml(String(confirmLabel || "Save"))}</button>
+          </div>
+        </div>
+      `;
+
+      const cleanup = () => overlay.remove();
+      const close = (value) => {
+        cleanup();
+        resolve(value);
+      };
+
+      const input = overlay.querySelector("#promptInput");
+      const saveBtn = overlay.querySelector("button[data-action='save']");
+      const updateEnabled = () => {
+        const value = String(input?.value || "").trim();
+        saveBtn.disabled = value.length < 1;
+      };
+      input?.addEventListener("input", updateEnabled);
+      updateEnabled();
+
+      const onKeyDown = (e) => {
+        if (e.key === "Escape") close(null);
+        if (e.key === "Enter") {
+          const value = String(input?.value || "").trim();
+          if (value) close(value);
+        }
+      };
+      window.addEventListener("keydown", onKeyDown);
+
+      overlay.addEventListener("click", (e) => {
+        if (e.target.closest("button[data-action='cancel']")) return close(null);
+        if (e.target.closest("button[data-action='save']")) {
+          const value = String(input?.value || "").trim();
+          if (!value) return;
+          return close(value);
+        }
+      });
+
+      document.body.appendChild(overlay);
+      input?.focus?.();
+      try {
+        input?.setSelectionRange?.(999, 999);
+      } catch {
+        // ignore
+      }
+
+      const originalCleanup = cleanup;
+      cleanup = () => {
+        originalCleanup();
+        window.removeEventListener("keydown", onKeyDown);
+      };
+    });
+
+  const ensureSignedIn = async () => {
+    const client = await getSupabaseClient();
+
+    const url = new URL(window.location.href);
+    const authErr =
+      url.searchParams.get("error_description") ||
+      url.searchParams.get("error") ||
+      url.searchParams.get("error_code");
+    if (authErr) showToast(String(authErr).slice(0, 140), { durationMs: 5000 });
+
+    if (url.searchParams.get("code")) {
+      try {
+        const ex = await client.auth.exchangeCodeForSession(window.location.href);
+        if (ex?.error) showToast(String(ex.error?.message || ex.error || "Auth failed"), { durationMs: 5000 });
+      } catch {
+        // ignore
+      }
+    }
+
+    const { data: sessionData } = await client.auth.getSession();
+    const session = sessionData?.session || null;
+
+    if (!session) {
+      await showSignInGate(client, { errorMessage: authErr });
+      return null;
+    }
+
+    const cleanUrl = stripAuthParamsFromUrl();
+    if (cleanUrl) {
+      try {
+        window.history.replaceState({}, "", cleanUrl);
+      } catch {
+        // ignore
+      }
+    }
+
+    authState.session = session;
+    authState.userId = session.user?.id || null;
+    authState.nickname = getNicknameFromSession(session);
+
+    try {
+      const prev = localStorage.getItem(LAST_USER_KEY);
+      const next = authState.userId || "";
+      if (prev && next && prev !== next) {
+        localStorage.removeItem(PLANNER_KEY);
+        localStorage.removeItem(STATUS_KEY);
+        localStorage.removeItem(SYNC_SETTINGS_KEY);
+        planner = buildDefaultPlanner();
+        statusById = {};
+      }
+      if (next) localStorage.setItem(LAST_USER_KEY, next);
+    } catch {
+      // ignore
+    }
+
+    if (!authState.nickname) {
+      const meta = session?.user?.user_metadata || {};
+      const suggested =
+        (typeof meta?.full_name === "string" && meta.full_name.trim()) ||
+        (typeof meta?.name === "string" && meta.name.trim()) ||
+        "";
+      const picked = await openNicknameModal({ suggested });
+      if (!picked) {
+        try {
+          await client.auth.signOut();
+        } catch {
+          // ignore
+        }
+        await showSignInGate(client);
+        return null;
+      }
+      const up = await client.auth.updateUser({ data: { nickname: picked } });
+      if (up?.error) {
+        showToast(String(up.error?.message || up.error || "Nickname save failed"), { durationMs: 5000 });
+      } else {
+        authState.nickname = picked;
+      }
+    }
+
+    const gate = $("#authGate");
+    if (gate) gate.remove();
+    return session;
+  };
+
+  const authedSession = await ensureSignedIn();
+  if (!authedSession) return;
 
   const openSyncConflictModal = ({ local, remote }) =>
     new Promise((resolve) => {
@@ -1196,6 +1532,9 @@ async function main() {
           if (!next || typeof next !== "object") return;
           if (next.updated_by && String(next.updated_by) === clientId) return;
 
+          if (typeof next.title === "string") syncState.tripTitle = next.title;
+          if ("created_by" in next) syncState.tripCreatedBy = next.created_by || null;
+
           const remotePlanner = next.planner;
           const remoteStatus = next.status;
           applyRemoteState({ remotePlanner, remoteStatus });
@@ -1217,9 +1556,25 @@ async function main() {
 
     try {
       const client = await getSupabaseClient();
-      const session = await ensureAuthed(client);
-      const userId = session?.user?.id;
-      if (!userId) throw new Error("Auth missing user");
+      const userId = authState.userId;
+      if (!userId) throw new Error("Please sign in");
+
+      if (syncState.enabled && syncState.tripId && String(syncState.tripId) !== String(tripId)) {
+        try {
+          await pushTripUpdates();
+        } catch {
+          // ignore
+        }
+        try {
+          await disconnectSync({ silent: true });
+        } catch {
+          // ignore
+        }
+        planner = buildDefaultPlanner();
+        statusById = {};
+        savePlanner(planner);
+        saveStatus(statusById);
+      }
 
       const joinRes = await client
         .from("trip_members")
@@ -1228,11 +1583,15 @@ async function main() {
 
       const tripRes = await client
         .from("trips")
-        .select("id,planner,status,join_code,updated_at,updated_by")
+        .select("id,title,created_by,planner,status,join_code,updated_at,updated_by")
         .eq("id", tripId)
         .single();
       if (tripRes?.error) throw tripRes.error;
       const row = tripRes.data;
+
+      const remoteJoinCode = typeof row?.join_code === "string" && row.join_code ? row.join_code : joinCode;
+      const remoteTitle = typeof row?.title === "string" ? row.title : "";
+      const remoteCreatedBy = row?.created_by || null;
 
       const remotePlanner = normalizePlanner(row?.planner);
       const remoteStatus = row?.status && typeof row.status === "object" ? row.status : {};
@@ -1273,11 +1632,13 @@ async function main() {
 
       syncState.enabled = true;
       syncState.tripId = tripId;
-      syncState.joinCode = joinCode;
-      saveSyncSettings({ tripId, joinCode });
+      syncState.joinCode = remoteJoinCode;
+      syncState.tripTitle = remoteTitle || null;
+      syncState.tripCreatedBy = remoteCreatedBy;
+      saveSyncSettings({ userId, tripId, joinCode: remoteJoinCode });
 
       try {
-        const url = buildShareUrl({ tripId, joinCode });
+        const url = buildShareUrl({ tripId, joinCode: remoteJoinCode });
         window.history.replaceState({}, "", url);
       } catch {
         // ignore
@@ -1288,11 +1649,11 @@ async function main() {
       sync({ keepView: true });
       if (viewId === "planner") renderPlanner();
 
-      showToast(source === "auto" ? "Sync connected" : "Connected");
+      showToast(source === "auto" ? "Trip connected" : "Connected");
       setSyncUi("on");
       return true;
     } catch (err) {
-      showToast(syncErrorMessage(err) || "Sync failed");
+      showToast(syncErrorMessage(err) || "Connection failed");
       setSyncUi("off");
       return false;
     } finally {
@@ -1300,18 +1661,33 @@ async function main() {
     }
   };
 
-  const createSharedTrip = async () => {
+  const createSharedTrip = async ({ title } = {}) => {
     if (syncState.connecting) return null;
     syncState.connecting = true;
     setSyncUi("connecting");
 
     try {
       const client = await getSupabaseClient();
-      const session = await ensureAuthed(client);
-      const userId = session?.user?.id;
-      if (!userId) throw new Error("Auth missing user");
+      const userId = authState.userId;
+      if (!userId) throw new Error("Please sign in");
+
+      if (syncState.enabled && syncState.tripId) {
+        try {
+          await pushTripUpdates();
+        } catch {
+          // ignore
+        }
+        try {
+          await disconnectSync({ silent: true });
+        } catch {
+          // ignore
+        }
+      }
 
       const tripId = uuidv4();
+      const tripTitle = String(title || "").trim() || "New trip";
+      const emptyPlanner = buildDefaultPlanner();
+      const emptyStatus = {};
 
       let joinCode = randomJoinCode();
       let insertOk = false;
@@ -1319,8 +1695,10 @@ async function main() {
         const insertRes = await client.from("trips").insert({
           id: tripId,
           join_code: joinCode,
-          planner,
-          status: statusById,
+          title: tripTitle,
+          created_by: userId,
+          planner: emptyPlanner,
+          status: emptyStatus,
           updated_by: clientId,
         });
         if (!insertRes?.error) {
@@ -1341,10 +1719,17 @@ async function main() {
         .insert({ trip_id: tripId, user_id: userId, join_code: joinCode });
       if (joinRes?.error && joinRes.error?.code !== "23505") throw joinRes.error;
 
+      planner = emptyPlanner;
+      statusById = emptyStatus;
+      savePlanner(planner);
+      saveStatus(statusById);
+
       syncState.enabled = true;
       syncState.tripId = tripId;
       syncState.joinCode = joinCode;
-      saveSyncSettings({ tripId, joinCode });
+      syncState.tripTitle = tripTitle;
+      syncState.tripCreatedBy = userId;
+      saveSyncSettings({ userId, tripId, joinCode });
 
       try {
         window.history.replaceState({}, "", buildShareUrl({ tripId, joinCode }));
@@ -1354,8 +1739,11 @@ async function main() {
 
       await subscribeToTrip(client);
 
+      sync({ keepView: true });
+      if (viewId === "planner") renderPlanner();
+
       setSyncUi("on");
-      showToast("Share link created");
+      showToast("Trip created");
       return { tripId, joinCode };
     } catch (err) {
       showToast(syncErrorMessage(err) || "Could not create trip");
@@ -1366,10 +1754,12 @@ async function main() {
     }
   };
 
-  const disconnectSync = async () => {
+  const disconnectSync = async ({ silent } = {}) => {
     syncState.enabled = false;
     syncState.tripId = null;
     syncState.joinCode = null;
+    syncState.tripTitle = null;
+    syncState.tripCreatedBy = null;
     saveSyncSettings(null);
     setSyncUi("off");
 
@@ -1388,7 +1778,7 @@ async function main() {
       // ignore
     }
 
-    showToast("Sync off");
+    if (!silent) showToast("Disconnected");
   };
 
   const markPlannerDirty = () => {
@@ -1453,86 +1843,304 @@ async function main() {
     }
   };
 
-  const openSyncModal = () =>
+  const hasSeenOnboarding = () => {
+    const userId = authState.userId;
+    if (!userId) return true;
+    try {
+      const raw = localStorage.getItem(ONBOARDING_SEEN_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && parsed[userId] === 1;
+    } catch {
+      return false;
+    }
+  };
+
+  const markOnboardingSeen = () => {
+    const userId = authState.userId;
+    if (!userId) return;
+    try {
+      const raw = localStorage.getItem(ONBOARDING_SEEN_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      const next = parsed && typeof parsed === "object" ? parsed : {};
+      next[userId] = 1;
+      localStorage.setItem(ONBOARDING_SEEN_KEY, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  };
+
+  const fetchTrips = async () => {
+    const client = await getSupabaseClient();
+    const res = await client
+      .from("trips")
+      .select("id,title,created_by,updated_at,created_at,join_code")
+      .order("updated_at", { ascending: false });
+    if (res?.error) throw res.error;
+    return Array.isArray(res?.data) ? res.data : [];
+  };
+
+  const signOut = async () => {
+    const ok = confirm("Sign out?");
+    if (!ok) return;
+    try {
+      await disconnectSync({ silent: true });
+    } catch {
+      // ignore
+    }
+    try {
+      const client = await getSupabaseClient();
+      await client.auth.signOut();
+    } catch {
+      // ignore
+    }
+    try {
+      localStorage.removeItem(LAST_USER_KEY);
+      localStorage.removeItem(SYNC_SETTINGS_KEY);
+      localStorage.removeItem(PLANNER_KEY);
+      localStorage.removeItem(STATUS_KEY);
+    } catch {
+      // ignore
+    }
+    window.location.reload();
+  };
+
+  const renameTrip = async ({ tripId, currentTitle } = {}) => {
+    if (!tripId) return false;
+    const nextTitle = await openTextPromptModal({
+      title: "Rename trip",
+      subtitle: "Visible to everyone with edit access.",
+      placeholder: "Trip name",
+      initialValue: currentTitle || "",
+      confirmLabel: "Rename",
+    });
+    if (!nextTitle) return false;
+    try {
+      const client = await getSupabaseClient();
+      const res = await client.from("trips").update({ title: nextTitle, updated_by: clientId }).eq("id", tripId);
+      if (res?.error) throw res.error;
+      if (syncState.tripId === tripId) syncState.tripTitle = nextTitle;
+      showToast("Trip renamed");
+      return true;
+    } catch (err) {
+      showToast(syncErrorMessage(err) || "Rename failed");
+      return false;
+    }
+  };
+
+  const openSyncModal = ({ intent = "manage" } = {}) =>
     new Promise((resolve) => {
       const overlay = document.createElement("div");
       overlay.className = "fixed inset-0 z-[2600] flex items-end md:items-center justify-center";
 
+      let trips = [];
+      let tripsLoading = true;
+      let tripsError = "";
+
+      const loadTrips = async () => {
+        tripsLoading = true;
+        tripsError = "";
+        render();
+        try {
+          trips = await fetchTrips();
+        } catch (err) {
+          tripsError = String(err?.message || err || "Failed to load trips");
+          trips = [];
+        } finally {
+          tripsLoading = false;
+          render();
+        }
+      };
+
+      const renderTrips = () => {
+        if (tripsLoading) {
+          return `
+            <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+              <div class="text-xs font-semibold text-slate-300">Your trips</div>
+              <div class="mt-2 text-[11px] text-slate-400">Loading…</div>
+            </div>
+          `;
+        }
+        if (tripsError) {
+          return `
+            <div class="rounded-2xl bg-rose-500/10 p-4 ring-1 ring-rose-400/20">
+              <div class="text-xs font-semibold text-rose-100">Trips unavailable</div>
+              <div class="mt-1 text-[11px] text-rose-100/80">${escapeHtml(tripsError)}</div>
+            </div>
+          `;
+        }
+        if (!trips.length) {
+          return `
+            <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+              <div class="text-xs font-semibold text-slate-300">Your trips</div>
+              <div class="mt-2 text-[11px] text-slate-400">No trips yet.</div>
+            </div>
+          `;
+        }
+
+        const rows = trips
+          .map((t) => {
+            const title = typeof t?.title === "string" && t.title.trim() ? t.title.trim() : "Untitled trip";
+            const isOwned = authState.userId && t?.created_by && String(t.created_by) === String(authState.userId);
+            const isOpen = syncState.tripId && String(syncState.tripId) === String(t?.id);
+            const badge = isOwned ? "Owned" : "Shared";
+            return `
+              <button
+                type="button"
+                data-action="openTrip"
+                data-trip-id="${escapeHtml(String(t.id || ""))}"
+                data-trip-key="${escapeHtml(String(t.join_code || ""))}"
+                class="w-full rounded-2xl bg-white/5 p-4 text-left ring-1 ring-white/10 transition hover:bg-white/10"
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="truncate text-sm font-extrabold text-white">${escapeHtml(title)}</div>
+                    <div class="mt-1 text-[11px] text-slate-400">${escapeHtml(badge)}${
+                      isOpen ? " · Open" : ""
+                    }</div>
+                  </div>
+                  <div class="shrink-0 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/10">${
+                    isOpen ? "Current" : "Open"
+                  }</div>
+                </div>
+              </button>
+            `;
+          })
+          .join("");
+
+        return `
+          <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+            <div class="flex items-center justify-between gap-2">
+              <div class="text-xs font-semibold text-slate-300">Your trips</div>
+              <button
+                type="button"
+                data-action="refreshTrips"
+                class="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
+              >Refresh</button>
+            </div>
+            <div class="mt-3 grid gap-2">${rows}</div>
+          </div>
+        `;
+      };
+
       const render = () => {
         const connected = !!(syncState.enabled && syncState.tripId && syncState.joinCode);
-        const shareUrl = connected ? buildShareUrl({ tripId: syncState.tripId, joinCode: syncState.joinCode }) : "";
-        const subtitle = connected
-          ? `Connected · Anyone with this link can edit`
-          : `Create a share link to sync Planner + Favorite/Visited`;
+        const shareUrl = connected
+          ? buildShareUrl({ tripId: syncState.tripId, joinCode: syncState.joinCode })
+          : "";
+        const userLine = authState.nickname ? `Signed in as ${authState.nickname}` : "Signed in";
+
+        const ownedCount = trips.filter(
+          (t) => authState.userId && t?.created_by && String(t.created_by) === String(authState.userId),
+        ).length;
+        const showWelcome = intent === "onboarding" || (!hasSeenOnboarding() && ownedCount === 0);
 
         overlay.innerHTML = `
           <div data-action="backdrop" class="absolute inset-0 bg-black/55 backdrop-blur-sm"></div>
           <div class="relative w-full md:max-w-md md:rounded-3xl rounded-t-3xl border border-white/10 bg-slate-950/80 backdrop-blur-xl shadow-2xl">
             <div class="border-b border-white/10 px-5 py-4">
-              <div class="text-base font-extrabold tracking-tight text-white">Sync & Share</div>
-              <div class="mt-1 text-xs text-slate-300">${escapeHtml(subtitle)}</div>
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="text-base font-extrabold tracking-tight text-white">Trips</div>
+                  <div class="mt-1 text-xs text-slate-300">${escapeHtml(userLine)}</div>
+                </div>
+                <button
+                  type="button"
+                  data-action="signOut"
+                  class="rounded-full bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+                >Sign out</button>
+              </div>
             </div>
 
-            <div class="px-5 py-4">
+            <div class="px-5 py-4 grid gap-4">
+              ${
+                showWelcome
+                  ? `
+                    <div class="rounded-2xl bg-emerald-500/10 p-4 ring-1 ring-emerald-400/20">
+                      <div class="text-xs font-semibold text-emerald-100">Welcome</div>
+                      <div class="mt-1 text-[11px] text-emerald-100/80">Create a new trip or join a friend’s plan to start.</div>
+                    </div>
+                  `
+                  : ""
+              }
+
               ${
                 connected
                   ? `
                     <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
-                      <div class="text-xs font-semibold text-slate-300">Share link</div>
-                      <div class="mt-2">
-                        <input
-                          id="syncShareUrl"
-                          type="text"
-                          readonly
-                          value="${escapeHtml(shareUrl)}"
-                          class="w-full rounded-2xl bg-black/25 px-3 py-2 text-xs text-slate-100 ring-1 ring-white/10 outline-none"
-                        />
-                      </div>
-                      <div class="mt-3 flex flex-wrap items-center gap-2">
+                      <div class="flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                          <div class="text-xs font-semibold text-slate-300">Current trip</div>
+                          <div class="mt-1 truncate text-sm font-extrabold text-white">${escapeHtml(
+                            syncState.tripTitle || "Untitled trip",
+                          )}</div>
+                        </div>
                         <button
                           type="button"
-                          data-action="copy"
-                          class="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
-                        >Copy</button>
-                        <button
-                          type="button"
-                          data-action="disconnect"
-                          class="rounded-full bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
-                        >Disconnect</button>
+                          data-action="renameCurrent"
+                          class="shrink-0 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
+                        >Rename</button>
                       </div>
-                    </div>
-                  `
-                  : `
-                    <div class="grid gap-3">
-                      <button
-                        type="button"
-                        data-action="create"
-                        class="w-full rounded-2xl bg-emerald-500/15 px-4 py-3 text-left ring-1 ring-emerald-400/30 transition hover:bg-emerald-500/20"
-                      >
-                        <div class="text-sm font-extrabold text-white">Create share link</div>
-                        <div class="mt-1 text-[11px] text-slate-200/80">Start syncing with friends</div>
-                      </button>
 
-                      <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
-                        <div class="text-xs font-semibold text-slate-300">Join</div>
-                        <div class="mt-2 flex items-center gap-2">
+                      <div class="mt-3">
+                        <div class="text-xs font-semibold text-slate-300">Share link</div>
+                        <div class="mt-2">
                           <input
-                            id="syncJoinInput"
-                            type="url"
-                            placeholder="Paste share link…"
-                            class="min-w-0 flex-1 rounded-2xl bg-black/25 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-400 ring-1 ring-white/10 outline-none"
+                            id="syncShareUrl"
+                            type="text"
+                            readonly
+                            value="${escapeHtml(shareUrl)}"
+                            class="w-full rounded-2xl bg-black/25 px-3 py-2 text-xs text-slate-100 ring-1 ring-white/10 outline-none"
                           />
+                        </div>
+                        <div class="mt-3 flex flex-wrap items-center gap-2">
                           <button
                             type="button"
-                            data-action="join"
-                            class="shrink-0 rounded-2xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
-                          >Join</button>
+                            data-action="copy"
+                            class="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
+                          >Copy</button>
+                          <button
+                            type="button"
+                            data-action="disconnect"
+                            class="rounded-full bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-200 ring-1 ring-white/10 transition hover:bg-white/10"
+                          >Disconnect</button>
                         </div>
-                        <div class="mt-2 text-[11px] text-slate-400">Tip: open the share link directly to auto-join.</div>
                       </div>
                     </div>
                   `
+                  : ""
               }
+
+              <div class="grid gap-3">
+                <button
+                  type="button"
+                  data-action="create"
+                  class="w-full rounded-2xl bg-white/10 px-4 py-3 text-left ring-1 ring-white/10 transition hover:bg-white/15"
+                >
+                  <div class="text-sm font-extrabold text-white">Create new trip</div>
+                  <div class="mt-1 text-[11px] text-slate-300">Starts empty</div>
+                </button>
+
+                <div class="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
+                  <div class="text-xs font-semibold text-slate-300">Join</div>
+                  <div class="mt-2 flex items-center gap-2">
+                    <input
+                      id="syncJoinInput"
+                      type="url"
+                      placeholder="Paste share link…"
+                      class="min-w-0 flex-1 rounded-2xl bg-black/25 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-400 ring-1 ring-white/10 outline-none"
+                    />
+                    <button
+                      type="button"
+                      data-action="join"
+                      class="shrink-0 rounded-2xl bg-white/10 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15"
+                    >Join</button>
+                  </div>
+                  <div class="mt-2 text-[11px] text-slate-400">Tip: opening the share link directly also works.</div>
+                </div>
+              </div>
+
+              ${renderTrips()}
             </div>
 
             <div class="flex items-center justify-end gap-2 border-t border-white/10 px-5 py-4">
@@ -1547,12 +2155,14 @@ async function main() {
       };
 
       render();
+      loadTrips();
 
       const cleanup = () => {
         overlay.remove();
         window.removeEventListener("keydown", onKeyDown);
       };
       const close = () => {
+        markOnboardingSeen();
         cleanup();
         resolve();
       };
@@ -1565,16 +2175,44 @@ async function main() {
         if (e.target.closest("[data-action='backdrop']")) return close();
         if (e.target.closest("button[data-action='close']")) return close();
 
+        if (e.target.closest("button[data-action='signOut']")) return signOut();
+
+        const refreshBtn = e.target.closest("button[data-action='refreshTrips']");
+        if (refreshBtn) {
+          refreshBtn.disabled = true;
+          await loadTrips();
+          refreshBtn.disabled = false;
+          return;
+        }
+
+        const renameBtn = e.target.closest("button[data-action='renameCurrent']");
+        if (renameBtn) {
+          renameBtn.disabled = true;
+          await renameTrip({ tripId: syncState.tripId, currentTitle: syncState.tripTitle || "" });
+          await loadTrips();
+          renameBtn.disabled = false;
+          return;
+        }
+
         const createBtn = e.target.closest("button[data-action='create']");
         if (createBtn) {
           createBtn.disabled = true;
-          const created = await createSharedTrip();
-          if (created) {
-            const url = buildShareUrl(created);
-            await copyToClipboard(url);
-            render();
-          } else {
+          const title = await openTextPromptModal({
+            title: "Create trip",
+            subtitle: "You can rename it later.",
+            placeholder: "Trip name",
+            initialValue: "New trip",
+            confirmLabel: "Create",
+          });
+          if (!title) {
             createBtn.disabled = false;
+            return;
+          }
+          const created = await createSharedTrip({ title });
+          createBtn.disabled = false;
+          if (created) {
+            await loadTrips();
+            render();
           }
           return;
         }
@@ -1591,7 +2229,45 @@ async function main() {
           joinBtn.disabled = true;
           const ok = await connectToTrip(params, { source: "manual" });
           joinBtn.disabled = false;
-          if (ok) render();
+          if (ok) {
+            await loadTrips();
+            render();
+          }
+          return;
+        }
+
+        const openBtn = e.target.closest("button[data-action='openTrip']");
+        if (openBtn) {
+          const tripId = openBtn.dataset.tripId;
+          const joinCode = openBtn.dataset.tripKey;
+          if (!tripId || !joinCode) return;
+          if (syncState.tripId && String(syncState.tripId) === String(tripId)) {
+            showToast("Already open");
+            return;
+          }
+
+          openBtn.disabled = true;
+          try {
+            await pushTripUpdates();
+          } catch {
+            // ignore
+          }
+          try {
+            await disconnectSync({ silent: true });
+          } catch {
+            // ignore
+          }
+          planner = buildDefaultPlanner();
+          statusById = {};
+          savePlanner(planner);
+          saveStatus(statusById);
+
+          const ok = await connectToTrip({ tripId, joinCode }, { source: "manual" });
+          openBtn.disabled = false;
+          if (ok) {
+            await loadTrips();
+            render();
+          }
           return;
         }
 
@@ -1607,6 +2283,7 @@ async function main() {
         const disconnectBtn = e.target.closest("button[data-action='disconnect']");
         if (disconnectBtn) {
           await disconnectSync();
+          await loadTrips();
           render();
         }
       });
@@ -3178,17 +3855,29 @@ async function main() {
 
   sheet?.onSnap?.(() => keepMyLocationInView(true));
 
-  const maybeAutoConnect = () => {
+  const maybeAutoConnect = async () => {
     const fromUrl = parseTripParamsFromUrl(window.location.href);
     const stored = loadSyncSettings();
-    const target = fromUrl || stored;
-    if (!target) return;
-    connectToTrip(target, { source: "auto" });
+    const storedOk =
+      stored &&
+      (!stored.userId || !authState.userId || stored.userId === authState.userId) &&
+      stored.tripId &&
+      stored.joinCode;
+    const target = fromUrl || storedOk;
+    if (target) {
+      const ok = await connectToTrip(target, { source: "auto" });
+      if (ok) {
+        markOnboardingSeen();
+        return;
+      }
+    }
+
+    if (!syncState.enabled) {
+      await openSyncModal({ intent: "onboarding" });
+    }
   };
 
-  maybeAutoConnect();
-
-  showToast("Loaded");
+  await maybeAutoConnect();
 }
 
 registerInstallPrompt();

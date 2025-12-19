@@ -29,8 +29,12 @@ GitHub Pages is static, so cross-device sync needs a backend. This app can sync:
 
 ### 1) Supabase setup (one-time)
 
-1) Supabase Dashboard → **Authentication** → enable **Anonymous sign-ins**
-2) Supabase Dashboard → **SQL Editor** → run `supabase_setup.sql`
+1) Supabase Dashboard → **Authentication** → **Providers** → enable **Google**
+   - You’ll need a Google OAuth Client ID/Secret (Google Cloud Console → Credentials).
+2) Supabase Dashboard → **Authentication** → **URL Configuration**
+   - **Site URL**: `https://seenyo.github.io/South-Korea-App/`
+   - **Redirect URLs**: add `https://seenyo.github.io/South-Korea-App/*`
+3) Supabase Dashboard → **SQL Editor** → run `supabase_setup.sql`
 
 If you see `Supabase policy blocked sync`, re-run `supabase_setup.sql` (policies updated).
 You can also confirm the helper exists:
@@ -41,8 +45,8 @@ select to_regproc('public.request_uid') as request_uid_fn;
 
 ### 2) Use it
 
-- Open the app → Planner → **Sync**
-- Create a shared trip → copy the share link → send to friends
+- Open the app → sign in with Google → Planner → **Trips**
+- Create a new trip → copy the share link → send to friends
 - Friends open the link and choose **Use cloud** / **Upload local** if asked
 
 ## PWA (Install)
